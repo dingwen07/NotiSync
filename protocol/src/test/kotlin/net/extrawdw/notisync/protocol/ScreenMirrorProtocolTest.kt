@@ -29,10 +29,12 @@ class ScreenMirrorProtocolTest {
         val request = request().copy(protocolVersion = 2, virtualDisplay = ScreenVirtualDisplay(
             width = 1600, height = 900, densityDpi = 240,
             launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "notification-key",
+            packageName = "com.example.postingapp",
         ))
         val decoded = ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(ProtocolCodec.encodeToCbor(request))
         assertEquals(2, decoded.protocolVersion)
         assertEquals(request.virtualDisplay, decoded.virtualDisplay)
+        assertTrue(requireNotNull(decoded.virtualDisplay).isValid())
         assertTrue(Capability.SCREEN_VIRTUAL_DISPLAY_V1 in decoded.requiredSourceCapabilities())
         assertEquals(null, ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(ProtocolCodec.encodeToCbor(request())).virtualDisplay)
     }
@@ -46,7 +48,8 @@ class ScreenMirrorProtocolTest {
             valid.copy(launchKind = "future-launch"),
             valid.copy(launchKind = ScreenVirtualDisplay.APP, packageName = "com.example;command"),
             valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = ""),
-            valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "key", packageName = "com.example.app"),
+            valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "key", packageName = "com.example;command"),
+            valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "key", packageName = "a." + "b".repeat(254)),
         ).forEach { assertEquals(it.toString(), false, it.isValid()) }
     }
     @Test

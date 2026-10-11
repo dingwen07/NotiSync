@@ -142,13 +142,25 @@ public final class NewDisplayCapture extends SurfaceCapture {
             else DisplayActivityLauncher.launch(config.packageName, id);
             return;
         }
-        PendingIntent intent = config.notificationResolver.resolve();
-        if (intent == null || !intent.isActivity()) {
-            throw new IOException("Notification is unavailable or does not launch an activity");
-        }
-        ActivityOptions options = ActivityOptions.makeBasic().setLaunchDisplayId(id);
-        options.setPendingIntentBackgroundActivityStartMode(backgroundActivityStartMode());
-        intent.send(FakeContext.get(), 0, null, null, null, null, options.toBundle());
+        boolean notificationSent = NotificationDisplayLauncher.launch(id, new NotificationDisplayLauncher.Notification() {
+            @Override public boolean send(int displayId) throws Exception {
+                PendingIntent intent = config.notificationResolver.resolve();
+                if (intent == null || !intent.isActivity()) return false;
+                ActivityOptions options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId);
+                options.setPendingIntentBackgroundActivityStartMode(backgroundActivityStartMode());
+                try {
+                    intent.send(FakeContext.get(), 0, null, null, null, null, options.toBundle());
+                    return true;
+                } catch (PendingIntent.CanceledException unavailable) {
+                    return false;
+                }
+            }
+
+            @Override public String resolveFallbackPackage() throws Exception {
+                return active.getAsBoolean() ? config.notificationResolver.resolveFallbackPackage() : null;
+            }
+        }, DisplayActivityLauncher::launch);
+        if (!notificationSent) return;
         // Match a normal content tap's auto-cancel behavior. Sending is not proof of placement,
         // and no failure here may retry the launch on display 0 or tear down the opened app.
         try { config.notificationResolver.onSent(); }

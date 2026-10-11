@@ -7,4 +7,6 @@ interface IScreenNotificationResolver {
     PendingIntent resolve(String ownerToken);
     /** Called only after sending the resolved activity PendingIntent succeeds. */
     void onSent(String ownerToken);
+    /** Rechecks the owner and authorization before opening the posting app instead. */
+    String resolveFallbackPackage(String ownerToken);
 }

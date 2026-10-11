@@ -173,6 +173,7 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
                 notificationResolver?.let { resolver -> object : VirtualDisplayConfig.NotificationResolver {
                     override fun resolve(): android.app.PendingIntent? = resolver.resolve(ownerToken)
                     override fun onSent() = resolver.onSent(ownerToken)
+                    override fun resolveFallbackPackage(): String? = resolver.resolveFallbackPackage(ownerToken)
                 } }, launcherIntent)
             backend.get().start(
                 PrivilegedCaptureConfig(ownerToken, codecId, maxDimension, maxFps, bitrateBps, allowControl, allowClipboard, display),

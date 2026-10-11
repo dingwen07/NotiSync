@@ -1322,7 +1322,7 @@ class RemoteNotificationPoster(
         val device = graph.trust.roster.value.firstOrNull { it.clientId == notif.sourceClientId } ?: return false
         return mirrorNotificationVirtualDisplay(true,
             mirrorNotificationOpenRoute(notif.sourceClientId, graph.clientId, device, notif.originPlatform,
-                graph.trust.quarantined.value), device.capabilities, notif.sourceKey) != null
+                graph.trust.quarantined.value), device.capabilities, notif.sourceKey, notif.packageName) != null
     }
 
     /** The source resolves the content intent only after authorizing and creating the display.
@@ -1331,6 +1331,7 @@ class RemoteNotificationPoster(
         val display = ScreenVirtualDisplay(
             launchKind = ScreenVirtualDisplay.NOTIFICATION,
             notificationKey = notif.sourceKey,
+            packageName = notif.packageName,
         )
         val launch = AndroidScreenMirrorActivity.intent(context, notif.sourceClientId, display).apply {
             net.extrawdw.apps.notisync.screen.ScreenVirtualDisplayIntents.fitToViewer(this)
@@ -1362,6 +1363,7 @@ class RemoteNotificationPoster(
             data = "notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}".toUri()
             putExtra(MirrorTapActivity.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorTapActivity.EXTRA_SOURCE_KEY, notif.sourceKey)
+            putExtra(MirrorTapActivity.EXTRA_NOTIFICATION_PACKAGE, notif.packageName)
             putExtra(MirrorTapActivity.EXTRA_DEVICE_NAME, originLabel)
             putExtra(
                 MirrorTapActivity.EXTRA_SCREEN_MIRROR_FALLBACK,
@@ -1755,6 +1757,7 @@ class MirrorTapActivity : Activity() {
                 route = route,
                 capabilities = sourceDevice?.capabilities.orEmpty(),
                 notificationKey = sourceKey,
+                packageName = intent.getStringExtra(EXTRA_NOTIFICATION_PACKAGE),
             )
             val opened = openScreen && runCatching {
                 startActivity(AndroidScreenMirrorActivity.intent(this, sourceClientId, virtualDisplay).apply {
@@ -1816,6 +1819,7 @@ class MirrorTapActivity : Activity() {
         const val ACTION_PERFORM_UI = "net.extrawdw.apps.notisync.MIRROR_UI_ACTION"
         const val EXTRA_SOURCE_CLIENT = "source_client"
         const val EXTRA_SOURCE_KEY = "source_key"
+        const val EXTRA_NOTIFICATION_PACKAGE = "notification_package"
         const val EXTRA_DEVICE_NAME = "device_name"
         const val EXTRA_ORIGIN_PLATFORM = "origin_platform"
         const val EXTRA_SCREEN_MIRROR_FALLBACK = "screen_mirror_fallback"

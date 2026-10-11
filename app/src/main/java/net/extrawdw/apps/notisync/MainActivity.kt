@@ -13,8 +13,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
@@ -130,6 +128,7 @@ import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.MenuManagementScreen
 import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
+import net.extrawdw.apps.notisync.navigation.AppNavigationTransitions
 import net.extrawdw.apps.notisync.navigation.MenuDestination
 import net.extrawdw.apps.notisync.navigation.icon
 import net.extrawdw.apps.notisync.navigation.label
@@ -755,13 +754,11 @@ fun NotiSyncRoot(
                 navController = navController,
                 startDestination = Route.Devices,
                 modifier = Modifier.fillMaxSize(),
-                // Top-level tabs swap instantly. Selecting a non-start tab is a push (enter/exit);
-                // selecting the start destination (Devices) is a pop, so the pop transitions must be
-                // None as well — otherwise Devices alone would slide while the others cut.
-                enterTransition = { EnterTransition.None },
-                exitTransition = { ExitTransition.None },
-                popEnterTransition = { EnterTransition.None },
-                popExitTransition = { ExitTransition.None },
+                // Normal pops inherit these; predictive back seeks the same fade-through motion.
+                enterTransition = { AppNavigationTransitions.enter },
+                exitTransition = { AppNavigationTransitions.exit },
+                predictivePopEnterTransition = { AppNavigationTransitions.enter },
+                predictivePopExitTransition = { AppNavigationTransitions.exit },
             ) {
                 composable<Route.Devices> {
                     DevicesPairingLayout(

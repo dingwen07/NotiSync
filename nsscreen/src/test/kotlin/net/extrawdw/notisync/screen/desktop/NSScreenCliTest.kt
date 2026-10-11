@@ -5,6 +5,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 
 class NSScreenCliTest {
     @Test
@@ -17,6 +18,11 @@ class NSScreenCliTest {
         val notification = NSScreenCli.parse(arrayOf("connect", "--new-display", "1080x1920/320",
             "--notification", "0|com.example.app|123")) as ScreenInvocation.Connect
         assertEquals("0|com.example.app|123", notification.options.virtualDisplay?.notificationKey)
+        val fallback = NSScreenCli.parse(arrayOf("connect", "--new-display", "1080x1920/320",
+            "--notification", "key", "--start-app", "com.example.app")) as ScreenInvocation.Connect
+        assertEquals(ScreenVirtualDisplay.NOTIFICATION, fallback.options.virtualDisplay?.launchKind)
+        assertEquals("key", fallback.options.virtualDisplay?.notificationKey)
+        assertEquals("com.example.app", fallback.options.virtualDisplay?.packageName)
     }
 
     @Test
@@ -26,7 +32,7 @@ class NSScreenCliTest {
             arrayOf("connect", "--new-display", "1080x1920/0"),
             arrayOf("connect", "--new-display", "1080x1920"),
             arrayOf("connect", "--start-app", "com.example.app"),
-            arrayOf("connect", "--new-display", "1080x1920/320", "--notification", "key", "--start-app", "com.example.app"),
+            arrayOf("connect", "--new-display", "1080x1920/320", "--notification", "key", "--start-app", "com.example;command"),
         ).forEach { arguments -> assertThrows(ScreenCliException::class.java) { NSScreenCli.parse(arguments) } }
     }
     @Test

@@ -114,13 +114,12 @@ internal object NSScreenCli {
         if (!control && clipboard) {
             throw ScreenCliException("clipboard requires the control channel; add --no-clipboard")
         }
-        if (launchPackage != null && notificationKey != null) throw ScreenCliException("Choose --start-app or --notification")
         if (display == null && (launchPackage != null || notificationKey != null)) {
             throw ScreenCliException("App and notification launch require --new-display")
         }
         display = display?.copy(
-            launchKind = when { launchPackage != null -> ScreenVirtualDisplay.APP
-                notificationKey != null -> ScreenVirtualDisplay.NOTIFICATION; else -> ScreenVirtualDisplay.HOME },
+            launchKind = when { notificationKey != null -> ScreenVirtualDisplay.NOTIFICATION
+                launchPackage != null -> ScreenVirtualDisplay.APP; else -> ScreenVirtualDisplay.HOME },
             packageName = launchPackage, notificationKey = notificationKey,
         )
         if (display?.isValid() == false) throw ScreenCliException("Invalid display: dimensions 240..4096, at most 8388608 pixels, DPI 120..640, and a valid launch target required")
@@ -140,7 +139,7 @@ internal object NSScreenCli {
           --no-control           View only
           --no-clipboard         Disable text clipboard synchronization
           --new-display WxH/DPI  Virtual display (requires a separate local grant on the phone)
-          --start-app PACKAGE    Open an app on the new display (default: secondary Home)
+          --start-app PACKAGE    Open an app, or use it when --notification is unavailable
           --notification KEY     Open an active notification activity on the new display
     """.trimIndent()
 

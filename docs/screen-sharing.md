@@ -102,10 +102,11 @@ nsscreen connect DEVICE_ID --new-display 1080x1920/320
 nsscreen connect DEVICE_ID --new-display 1080x1920/320 --start-app com.example.app
 ```
 
-`--notification KEY` can select an active source notification instead of `--start-app`. Notification
-launch requires an activity content intent; stale, canceled, broadcast, and service intents cannot
-use this path. After the content intent is sent successfully, an unchanged auto-cancel notification
-is dismissed on the source and its mirrors, matching an ordinary tap. Failed sends retain it;
+`--notification KEY` selects a source notification. If its activity content intent is unavailable or
+canceled, mirrored notification taps open the posting app on the same virtual display instead. CLI
+requests can supply `--start-app PACKAGE` alongside `--notification` for this fallback. The app must
+have a launchable activity. After the content intent is sent successfully, an unchanged auto-cancel notification
+is dismissed on the source and its mirrors, matching an ordinary tap. App fallback and failed sends retain it;
 ongoing foreground-service notifications and newer replacements are not auto-canceled. An app may
 redirect its activity, and a successful send alone does not confirm placement on the requested display.
 

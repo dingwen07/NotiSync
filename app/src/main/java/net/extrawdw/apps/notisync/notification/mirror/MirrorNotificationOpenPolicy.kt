@@ -36,12 +36,14 @@ internal fun mirrorNotificationVirtualDisplay(
     route: MirrorNotificationOpenRoute?,
     capabilities: Collection<Capability>,
     notificationKey: String,
+    packageName: String? = null,
 ): ScreenVirtualDisplay? {
     if (!isContentTap || route != MirrorNotificationOpenRoute.SCREEN_MIRROR ||
         Capability.SCREEN_VIRTUAL_DISPLAY_V1 !in capabilities
     ) return null
     return ScreenVirtualDisplay(launchKind = ScreenVirtualDisplay.NOTIFICATION,
-        notificationKey = notificationKey).takeIf { it.isValid() }
+        notificationKey = notificationKey,
+        packageName = packageName).takeIf { it.isValid() }
 }
 
 /**

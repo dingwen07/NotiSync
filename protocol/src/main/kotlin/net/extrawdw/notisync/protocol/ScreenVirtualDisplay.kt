@@ -15,6 +15,7 @@ data class ScreenVirtualDisplay(
     /** Open registry, so unknown launch kinds fail validation instead of changing destinations. */
     // Keep the nested map nonempty even for default Home settings; empty nullable CBOR maps collapse to null.
     @CborLabel(3) @EncodeDefault(EncodeDefault.Mode.ALWAYS) val launchKind: String = HOME,
+    /** App launch target, or posting app fallback for a notification launch. */
     @CborLabel(4) val packageName: String? = null,
     @CborLabel(5) val notificationKey: String? = null,
 ) {
@@ -23,8 +24,9 @@ data class ScreenVirtualDisplay(
             HOME -> packageName == null && notificationKey == null
             APP -> packageName != null && packageName.length <= 255 &&
                 PACKAGE.matches(packageName) && notificationKey == null
-            NOTIFICATION -> packageName == null && !notificationKey.isNullOrBlank() &&
-                notificationKey.length <= 1024 && notificationKey.none(Char::isISOControl)
+            NOTIFICATION -> !notificationKey.isNullOrBlank() &&
+                notificationKey.length <= 1024 && notificationKey.none(Char::isISOControl) &&
+                (packageName == null || (packageName.length <= 255 && PACKAGE.matches(packageName)))
             else -> false
         }
 

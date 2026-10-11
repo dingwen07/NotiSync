@@ -14,9 +14,10 @@ class MirrorNotificationOpenPolicyTest {
     fun `previously posted tap upgrades to virtual display when current peer supports it`() {
         val source = device(capabilities = FULL_CAPABILITIES + Capability.SCREEN_VIRTUAL_DISPLAY_V1)
         val route = mirrorNotificationOpenRoute(source.clientId, ClientId("this-device"), source)
-        val display = mirrorNotificationVirtualDisplay(true, route, source.capabilities, "source-key")
+        val display = mirrorNotificationVirtualDisplay(true, route, source.capabilities, "source-key", "com.example.postingapp")
         assertEquals(ScreenVirtualDisplay.NOTIFICATION, display?.launchKind)
         assertEquals("source-key", display?.notificationKey)
+        assertEquals("com.example.postingapp", display?.packageName)
     }
 
     @Test
@@ -25,6 +26,7 @@ class MirrorNotificationOpenPolicyTest {
         assertEquals(null, mirrorNotificationVirtualDisplay(false, MirrorNotificationOpenRoute.SCREEN_MIRROR, capabilities, "key"))
         assertEquals(null, mirrorNotificationVirtualDisplay(true, MirrorNotificationOpenRoute.SCREEN_MIRROR, FULL_CAPABILITIES, "key"))
         assertEquals(null, mirrorNotificationVirtualDisplay(true, MirrorNotificationOpenRoute.SCREEN_MIRROR, capabilities, ""))
+        assertEquals(null, mirrorNotificationVirtualDisplay(true, MirrorNotificationOpenRoute.SCREEN_MIRROR, capabilities, "key", "com.example;command"))
         for (route in listOf(null, MirrorNotificationOpenRoute.LOCAL_ORIGIN, MirrorNotificationOpenRoute.REMOTE_ONLY)) {
             assertEquals(null, mirrorNotificationVirtualDisplay(true, route, capabilities, "key"))
         }

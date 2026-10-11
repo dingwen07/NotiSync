@@ -333,13 +333,18 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                             try { resolved.getAndSet(null)?.onSent() }
                             finally { android.os.Binder.restoreCallingIdentity(identity) }
                         }
+
+                        override fun resolveFallbackPackage(token: String): String? =
+                            display.packageName.takeIf {
+                                token == ownerToken && authorizeNotification()
+                            }
                     }
                 }
                 remote.startVirtualSession(
                     ownerToken, codec.codecId(), request.maxDimension ?: DEFAULT_MAX_DIMENSION,
                     request.maxFps ?: DEFAULT_MAX_FPS, request.videoBitrateBps ?: DEFAULT_BITRATE_BPS,
                     request.requestControl, request.requestClipboard, display.width, display.height, display.densityDpi,
-                    display.packageName, resolver,
+                    display.packageName.takeIf { resolver == null }, resolver,
                     ScreenVirtualLauncherSessions.register(appContext, ownerToken, authorizeNotification),
                     createdVideoPair[1], createdControlPair[1],
                 )
@@ -512,7 +517,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     private companion object {
         const val MIN_SHIZUKU_API = 13
         // Increment for a release candidate or an incompatible Binder/backend contract change.
-        const val USER_SERVICE_REVISION = 3
+        const val USER_SERVICE_REVISION = 4
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920

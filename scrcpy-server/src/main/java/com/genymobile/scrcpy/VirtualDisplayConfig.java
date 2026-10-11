@@ -7,6 +7,7 @@ public final class VirtualDisplayConfig {
     public interface NotificationResolver {
         PendingIntent resolve() throws Exception;
         void onSent() throws Exception;
+        String resolveFallbackPackage() throws Exception;
     }
 
     public final int width;
@@ -23,8 +24,7 @@ public final class VirtualDisplayConfig {
     public VirtualDisplayConfig(int width, int height, int densityDpi, String packageName, NotificationResolver notificationResolver,
             PendingIntent launcherIntent) {
         if (!isValidSize(width, height, densityDpi)
-                || (packageName != null && (packageName.length() > 255
-                    || !packageName.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")))
+                || (packageName != null && !isValidPackageName(packageName))
                 || (packageName != null && notificationResolver != null)) {
             throw new IllegalArgumentException("Invalid virtual display configuration");
         }
@@ -39,5 +39,10 @@ public final class VirtualDisplayConfig {
     public static boolean isValidSize(int width, int height, int densityDpi) {
         return width >= 240 && width <= 4096 && height >= 240 && height <= 4096
                 && (long) width * height <= 8_388_608 && densityDpi >= 120 && densityDpi <= 640;
+    }
+
+    public static boolean isValidPackageName(String value) {
+        return value != null && value.length() <= 255
+                && value.matches("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+");
     }
 }
