@@ -93,11 +93,10 @@ internal fun AppNavigationScaffold(
         NavigationSuiteScaffoldLayout(
             navigationSuiteType = navigationSuiteType,
             navigationSuite = {
-                // Material's Arrangement.Center centers across the header too. Own the header
-                // and remaining viewport together so a tall destination list cannot cover it.
+                // The content wrapper centers destinations and reserves header clearance
+                // so tall, scrollable lists cannot cover the menu button.
                 if (useModalRail) {
                     ModalWideNavigationRail(
-                        modifier = railModifier,
                         state = railState,
                         windowInsets = railInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Start),
                         contentPadding = PaddingValues(top = 8.dp),

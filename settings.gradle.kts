@@ -44,5 +44,6 @@ include(":notisync-ssh-agent")
 include(":notisyncd")
 include(":server")
 
-// Android client.
+// Android clients, with separate application IDs and shared sources.
 include(":app")
+include(":app-debug")
