@@ -194,10 +194,11 @@ fun RunScreen(
 
     AdaptiveDetailLayout(
         selectedKey = selectedEncoded,
+        detailState = selected to selectedLoadError,
         onDismiss = { selectedEncoded = null },
         paneTitle = selected?.state?.let(::commandLabel).orEmpty(),
-        detail = {
-            selected?.let { run ->
+        detail = { (shownRun, loadError) ->
+            shownRun?.let { run ->
                 RunDetailSheet(
                     uiState = detailUiState,
                     run = run,
@@ -209,10 +210,10 @@ fun RunScreen(
                 )
             }
 
-            if (selectedKey != null && selected == null) {
+            if (shownRun == null) {
                 EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
                     Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        if (selectedLoadError) {
+                        if (loadError) {
                             Text(stringResource(R.string.history_load_failed))
                             TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
                         } else CircularProgressIndicator()

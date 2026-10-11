@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -12,9 +13,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,80 +77,83 @@ internal fun AppConfigSheet(
     ) {
         DisableModalBottomSheetNavigationBarContrast()
         val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                // Inset row content individually so the ripple also covers the side gutters.
-                .padding(bottom = 32.dp + bottomInset),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (!LocalIsDetailPane.current) {
-                Text(app.label, modifier = Modifier.padding(horizontal = 20.dp),
-                    style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        AdaptiveDetailGrid(
+            contentPadding = PaddingValues(bottom = 32.dp + bottomInset),
+            verticalSpacing = 12.dp,
+        ) { wide ->
+            detailSection("app-details-controls") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (!LocalIsDetailPane.current) {
+                        Text(app.label, modifier = Modifier.padding(horizontal = 20.dp),
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+
+                    // --- Incoming: how a call RECEIVED from this app is alerted on THIS device. Kept at the top and
+                    // separated from the capture (outgoing) settings below, so its opposite direction isn't confused. ---
+                    SettingSwitchRow(
+                        title = stringResource(R.string.app_config_ring_calls_title),
+                        subtitle = stringResource(R.string.app_config_ring_calls_desc),
+                        checked = cfg.ringForCalls,
+                        onCheckedChange = { appConfig.setRingForCalls(app.packageName, it) },
+                    )
+
+                    HorizontalDivider(Modifier.padding(horizontal = 20.dp))
+
+                    // --- Outgoing capture: ongoing notifications this device mirrors OUT to your other devices ---
+                    SettingSwitchRow(
+                        title = stringResource(R.string.app_config_ongoing_title),
+                        subtitle = stringResource(R.string.app_config_ongoing_desc),
+                        checked = cfg.mirrorOngoing,
+                        onCheckedChange = { appConfig.setMirrorOngoing(app.packageName, it) },
+                    )
+                    if (cfg.mirrorOngoing) {
+                        UpdateFrequencySlider(
+                            current = cfg.updateIntervalSec,
+                            onChange = { appConfig.setUpdateIntervalSec(app.packageName, it) },
+                        )
+                        SettingSwitchRow(
+                            title = stringResource(R.string.app_config_ongoing_ios_title),
+                            subtitle = stringResource(R.string.app_config_ongoing_ios_desc),
+                            checked = cfg.mirrorOngoingToIos,
+                            onCheckedChange = { appConfig.setMirrorOngoingToIos(app.packageName, it) },
+                        )
+                    }
+                    SettingSwitchRow(
+                        title = stringResource(R.string.app_config_media_ios_title),
+                        subtitle = stringResource(R.string.app_config_media_ios_desc),
+                        checked = cfg.mirrorMediaPlaybackToIos,
+                        onCheckedChange = { appConfig.setMirrorMediaPlaybackToIos(app.packageName, it) },
+                    )
+
+                    if (!wide) HorizontalDivider(Modifier.padding(horizontal = 20.dp))
+                }
             }
-
-            // --- Incoming: how a call RECEIVED from this app is alerted on THIS device. Kept at the top and
-            // separated from the capture (outgoing) settings below, so its opposite direction isn't confused. ---
-            SettingSwitchRow(
-                title = stringResource(R.string.app_config_ring_calls_title),
-                subtitle = stringResource(R.string.app_config_ring_calls_desc),
-                checked = cfg.ringForCalls,
-                onCheckedChange = { appConfig.setRingForCalls(app.packageName, it) },
-            )
-
-            HorizontalDivider(Modifier.padding(horizontal = 20.dp))
-
-            // --- Outgoing capture: ongoing notifications this device mirrors OUT to your other devices ---
-            SettingSwitchRow(
-                title = stringResource(R.string.app_config_ongoing_title),
-                subtitle = stringResource(R.string.app_config_ongoing_desc),
-                checked = cfg.mirrorOngoing,
-                onCheckedChange = { appConfig.setMirrorOngoing(app.packageName, it) },
-            )
-            if (cfg.mirrorOngoing) {
-                UpdateFrequencySlider(
-                    current = cfg.updateIntervalSec,
-                    onChange = { appConfig.setUpdateIntervalSec(app.packageName, it) },
-                )
-                SettingSwitchRow(
-                    title = stringResource(R.string.app_config_ongoing_ios_title),
-                    subtitle = stringResource(R.string.app_config_ongoing_ios_desc),
-                    checked = cfg.mirrorOngoingToIos,
-                    onCheckedChange = { appConfig.setMirrorOngoingToIos(app.packageName, it) },
-                )
-            }
-            SettingSwitchRow(
-                title = stringResource(R.string.app_config_media_ios_title),
-                subtitle = stringResource(R.string.app_config_media_ios_desc),
-                checked = cfg.mirrorMediaPlaybackToIos,
-                onCheckedChange = { appConfig.setMirrorMediaPlaybackToIos(app.packageName, it) },
-            )
-
-            HorizontalDivider(Modifier.padding(horizontal = 20.dp))
-
-            // --- Notification channels ---
-            Text(stringResource(R.string.app_config_channels_title), modifier = Modifier.padding(horizontal = 20.dp),
-                style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(R.string.app_config_channels_desc),
-                modifier = Modifier.padding(horizontal = 20.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (channels.isEmpty()) {
-                Text(
-                    stringResource(R.string.app_config_channels_empty),
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                // Group by channel group; null-group channels fall into a trailing "Other" bucket that has no
-                // group-level toggle (there is no group id to disable). Groups with a real id get a group switch.
-                val byGroup = channels.groupBy { it.groupId }
-                byGroup.forEach { (groupId, groupChannels) ->
-                    ChannelGroup(app.packageName, groupId, groupChannels, cfg, appConfig)
+            detailSection("app-details-channels") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // --- Notification channels ---
+                    Text(stringResource(R.string.app_config_channels_title), modifier = Modifier.padding(horizontal = 20.dp),
+                        style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        stringResource(R.string.app_config_channels_desc),
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (channels.isEmpty()) {
+                        Text(
+                            stringResource(R.string.app_config_channels_empty),
+                            modifier = Modifier.padding(horizontal = 20.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        // Group by channel group; null-group channels fall into a trailing "Other" bucket that has no
+                        // group-level toggle (there is no group id to disable). Groups with a real id get a group switch.
+                        val byGroup = channels.groupBy { it.groupId }
+                        byGroup.forEach { (groupId, groupChannels) ->
+                            ChannelGroup(app.packageName, groupId, groupChannels, cfg, appConfig)
+                        }
+                    }
                 }
             }
         }

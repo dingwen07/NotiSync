@@ -773,8 +773,8 @@
     <string name="device_details_expanded">Expanded</string>
     <string name="device_details_collapsed">Collapsed</string>
     <plurals name="device_details_capability_count">
-        <item quantity="one">%1$d advertised capability</item>
-        <item quantity="other">%1$d advertised capabilities</item>
+        <item quantity="one">%1$d Capability</item>
+        <item quantity="other">%1$d Capabilities</item>
     </plurals>
     <string name="device_details_verified">✓ Verified</string>
     <string name="device_details_not_verified">✗ Not verified</string>
@@ -821,7 +821,6 @@
     <string name="screen_mirror_device_title">Allow screen control</string>
     <string name="screen_mirror_device_body">This device may start an authenticated local screen session without another approval prompt.</string>
     <string name="screen_mirror_device_hotspot_body">It may also control your hotspot and read its network name and password.</string>
-    <string name="screen_mirror_device_master_off">Enable screen sharing in Settings first.</string>
     <string name="screen_mirror_device_start">Mirror and control screen</string>
     <string name="screen_mirror_device_start_desc">Mirror and control %1$s</string>
     <string name="screen_mirror_codec_title">Video codec</string>

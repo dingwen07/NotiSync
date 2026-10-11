@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DrawerValue
@@ -21,6 +23,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.WideNavigationRailValue
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
+import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -37,6 +40,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -70,11 +76,21 @@ internal fun AppNavigationShell(
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val suiteIsRail = layoutType == NavigationSuiteType.WideNavigationRailCollapsed ||
         layoutType == NavigationSuiteType.WideNavigationRailExpanded
-    // Standard expansion shares space with content on wider windows. Medium windows keep
-    // the modal variant so opening all destinations does not squeeze the page.
+    // Reserve enough space for two preferred panes even at Material's widest expanded rail.
+    // Otherwise rail expansion alone changes an open inline detail into a modal sheet.
+    val paneDirective = calculatePaneScaffoldDirective(adaptiveInfo)
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val safeInsets = WindowInsets.safeDrawing
+    val safeWindowWidth = with(density) {
+        (LocalWindowInfo.current.containerSize.width - safeInsets.getLeft(density, layoutDirection) -
+            safeInsets.getRight(density, layoutDirection)).toDp()
+    }
+    val expandedRailSpace = 360.dp // Material 3 expanded rail maximum, including long labels.
+    val twoPaneSpace = paneDirective.defaultPanePreferredWidth * 2 + paneDirective.horizontalPartitionSpacerSize
     val useModalRail = !adaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
         WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND,
-    )
+    ) || safeWindowWidth - expandedRailSpace < twoPaneSpace
     val railState = rememberWideNavigationRailState()
     val railExpanded = suiteIsRail && railState.targetValue == WideNavigationRailValue.Expanded
     val itemLayoutType = if (railExpanded) NavigationSuiteType.WideNavigationRailExpanded else layoutType

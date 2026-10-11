@@ -3,6 +3,8 @@ package net.extrawdw.apps.notisync.ui
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.snap
@@ -16,8 +18,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +49,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,11 +61,13 @@ import androidx.navigation3.scene.OverlayScene
 import androidx.navigation3.scene.SceneStrategy
 import androidx.navigation3.ui.NavDisplay
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.navigation.AppNavigationTransitions
 import net.extrawdw.apps.notisync.ui.icons.material.filled.arrow_back as ArrowBackIcon
-import kotlin.math.roundToInt
 
 /** Remains true within pane content, including its title/header. */
 internal val LocalIsDetailPane = compositionLocalOf { false }
+/** Supporting-pane geometry, excluding shared horizontal system insets. */
+internal val LocalDetailPaneGeometry = compositionLocalOf<DetailPaneGeometry?> { null }
 private val LocalInlineDetailSheet = compositionLocalOf { false }
 private val LocalDetailPaneTitle = compositionLocalOf { "" }
 /** Animated pane dismissal for details that provide their own header. */
@@ -71,16 +76,17 @@ internal val LocalDetailPaneBack = compositionLocalOf<(() -> Unit)?> { null }
 /**
  * The same supporting-pane scene and motion as tablet pairing, with compact modal sheets.
  * Both presentations use the same decorated entries, retaining list/detail saveable state when
- * the window changes size. Item ids, rather than loaded records, identify detail entries.
+ * the window changes size. Item ids key the detail transition; record updates keep that identity.
  */
 @Composable
-internal fun AdaptiveDetailLayout(
+internal fun <T> AdaptiveDetailLayout(
     selectedKey: String?,
+    detailState: T,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     paneTitle: String = "",
     directive: PaneScaffoldDirective = calculatePaneScaffoldDirective(currentWindowAdaptiveInfoV2()),
-    detail: @Composable () -> Unit,
+    detail: @Composable (T) -> Unit,
     list: @Composable () -> Unit,
 ) {
     // Own horizontal safety once for the whole split, including the divider's end anchors.
@@ -95,9 +101,17 @@ internal fun AdaptiveDetailLayout(
         // Nav3 retains decorated entry content by key. Read the current presentation/content from
         // State inside that retained lambda, including when only the scene strategy changes.
         val currentWide = rememberUpdatedState(wide)
+        val density = LocalDensity.current
+        val geometry = remember(constraints.maxWidth, density) {
+            DetailPaneGeometry(constraints.maxWidth, with(density) { DetailPaneSpacer.roundToPx() })
+        }
+        val currentGeometry = rememberUpdatedState(geometry)
         val currentDetail = rememberUpdatedState(detail)
         val currentList = rememberUpdatedState(list)
-        val currentTitle = rememberUpdatedState(paneTitle)
+        // Keep the outgoing record and title while its exit animation runs. The renderer
+        // receives that snapshot, rather than reading the newly selected record for both panes.
+        val destination = remember { mutableStateOf<DetailDestination<T>?>(null) }
+        if (selectedKey != null) destination.value = DetailDestination(selectedKey, paneTitle, detailState)
         val currentDismiss = rememberUpdatedState(onDismiss)
         val paneState = remember { SupportingPaneMotionState() }
         val anchors = remember {
@@ -105,44 +119,44 @@ internal fun AdaptiveDetailLayout(
         }
         val paneExpansion = rememberPaneExpansionState(
             anchors = anchors,
-            anchoringAnimationSpec = tween(240, easing = FastOutSlowInEasing),
+            anchoringAnimationSpec = spring(dampingRatio = 1f, stiffness = PaneAnchoringStiffness),
         )
         val paneOpen = wide && selectedKey != null
         val currentPaneOpen = rememberUpdatedState(paneOpen)
         val windowWidthPx = rememberUpdatedState(constraints.maxWidth)
-        val spacerPx = rememberUpdatedState(with(LocalDensity.current) { 16.dp.roundToPx() })
         val interactionSource = remember { MutableInteractionSource() }
         val dragging = interactionSource.collectIsDraggedAsState()
+        val contentInteractionSource = remember { MutableInteractionSource() }
+        val contentDragging = contentInteractionSource.collectIsDraggedAsState()
+        val contentDrag = rememberPaneContentDrag(paneExpansion)
         val coveringEnabled = {
             currentPaneOpen.value && !paneState.opening && !paneState.closing
         }
         val anchoredWidth: (Boolean) -> Int? = { main ->
-            when (paneExpansion.currentAnchor) {
-                anchors.first() -> if (main) 0 else windowWidthPx.value
-                anchors[1] -> {
-                    val divider = (windowWidthPx.value * 0.5f).roundToInt()
-                    (if (main) divider else windowWidthPx.value - divider) - spacerPx.value / 2
-                }
-                anchors.last() -> if (main) windowWidthPx.value else 0
-                else -> null
+            (paneExpansion.currentAnchor as? PaneExpansionAnchor.Proportion)?.let {
+                currentGeometry.value.paneWidthAt(it.proportion, main)
             }
         }
+        val splitDetailWidth = with(density) { geometry.splitDetailWidth.toDp() }
+        var paneWidth by remember(maxWidth) { mutableStateOf(splitDetailWidth) }
         LaunchedEffect(paneOpen) {
-            if (paneOpen) paneState.open() else paneState.reset()
+            if (paneOpen) {
+                paneWidth = splitDetailWidth
+                paneState.open()
+            } else paneState.reset()
         }
-        var paneWidth by remember(maxWidth) { mutableStateOf(maxWidth / 2) }
         val currentPaneWidth = rememberUpdatedState(paneWidth)
         val prepareClose = rememberUpdatedState<(androidx.compose.ui.unit.Dp) -> Unit>({ width ->
-            paneWidth = (width + 16.dp).coerceAtMost(maxWidth)
+            paneWidth = width.coerceAtMost(maxWidth)
         })
-        val mainWidthPx = with(LocalDensity.current) {
-            (maxWidth - paneWidth * paneState.progress.value).roundToPx()
+        val mainWidthPx = with(density) {
+            geometry.firstPaneWidthDuringMotion(paneWidth.roundToPx(), paneState.progress.value)
         }
         // Update only while our open/close progress changes. Rewriting this in SideEffect would
         // overwrite the native handle's drag position on every recomposition.
         LaunchedEffect(mainWidthPx) { paneExpansion.setFirstPaneWidth(mainWidthPx) }
-        LaunchedEffect(paneExpansion.currentAnchor, paneOpen) {
-            if (paneOpen && paneExpansion.currentAnchor == anchors.last()) {
+        LaunchedEffect(paneExpansion.currentAnchor, paneOpen, contentDrag.isSettling) {
+            if (paneOpen && !contentDrag.isSettling && paneExpansion.currentAnchor == anchors.last()) {
                 paneExpansion.animateTo(anchors.last())
                 currentDismiss.value()
             }
@@ -153,7 +167,7 @@ internal fun AdaptiveDetailLayout(
             shouldHandleSinglePaneLayout = true,
             directive = PaneScaffoldDirective(
                 maxHorizontalPartitions = directive.maxHorizontalPartitions,
-                horizontalPartitionSpacerSize = 16.dp,
+                horizontalPartitionSpacerSize = with(density) { geometry.spacer.toDp() },
                 maxVerticalPartitions = directive.maxVerticalPartitions,
                 verticalPartitionSpacerSize = 0.dp,
                 defaultPanePreferredWidth = directive.defaultPanePreferredWidth,
@@ -165,9 +179,13 @@ internal fun AdaptiveDetailLayout(
             paneExpansionState = paneExpansion,
             paneExpansionDragHandle = { state ->
                 VerticalDragHandle(
-                    modifier = Modifier.testTag("detail-pane-divider").paneExpansionDraggable(
-                        state, LocalMinimumInteractiveComponentSize.current, interactionSource,
-                    ),
+                    modifier = Modifier.testTag("detail-pane-divider")
+                        .onGloballyPositioned {
+                            contentDrag.dividerCenter = it.positionInRoot().x + it.size.width / 2f
+                        }
+                        .paneExpansionDraggable(
+                            state, LocalMinimumInteractiveComponentSize.current, interactionSource,
+                        ),
                     interactionSource = interactionSource,
                 )
             },
@@ -184,18 +202,30 @@ internal fun AdaptiveDetailLayout(
                 if (entries.size > 1) SheetDetailScene(entries.last(), entries.dropLast(1)) else null
             }
         }
+        // Claim horizontal content swipes before the enclosing feature drawer. Child horizontal
+        // scrollers and vertical lists retain their normal gesture priority and touch slop.
+        val paneSwipe = Modifier.paneContentDraggable(
+            drag = contentDrag,
+            state = paneExpansion,
+            anchors = anchors,
+            geometry = geometry,
+            enabled = paneOpen && !paneState.opening && !paneState.closing,
+            interactionSource = contentInteractionSource,
+        )
         val strategy = if (wide) materialStrategy then sheetStrategy else sheetStrategy then materialStrategy
         // Keep NavDisplay's native transitions: its scene-entry exclusion cleanup runs when
         // a transition completes. Zero-duration overrides can leave a returning list excluded.
         NavDisplay(
-            backStack = listOf("list") + listOfNotNull(selectedKey?.let { "detail:$it" }),
+            modifier = paneSwipe,
+            backStack = listOf("list") + listOfNotNull(selectedKey?.let { "detail" }),
             sceneStrategy = strategy,
             onBack = onDismiss,
             entryProvider = { key ->
                 if (key == "list") {
                     NavEntry(key, metadata = SupportingPaneSceneStrategy.mainPane() + paneMotion) {
                         CoveringPaneContent(
-                            windowWidthPx.value, coveringEnabled, { dragging.value }, { anchoredWidth(true) },
+                            windowWidthPx.value, coveringEnabled,
+                            { dragging.value || contentDragging.value || contentDrag.isSettling }, { anchoredWidth(true) },
                             restoreSplitWidth = true,
                         ) { currentList.value() }
                     }
@@ -204,10 +234,12 @@ internal fun AdaptiveDetailLayout(
                         CompositionLocalProvider(
                             LocalInlineDetailSheet provides currentWide.value,
                             LocalIsDetailPane provides currentWide.value,
-                            LocalDetailPaneTitle provides currentTitle.value,
+                            LocalDetailPaneGeometry provides currentGeometry.value,
                         ) {
                             CoveringPaneContent(
-                                windowWidthPx.value, coveringEnabled, { dragging.value }, { anchoredWidth(false) },
+                                windowWidthPx.value, coveringEnabled,
+                                { dragging.value || contentDragging.value || contentDrag.isSettling }, { anchoredWidth(false) },
+                                minimumContentWidth = currentGeometry.value.splitDetailWidth,
                             ) {
                                 SlidingSupportingPane(
                                     paneState, currentPaneWidth.value, { currentDismiss.value() },
@@ -218,7 +250,26 @@ internal fun AdaptiveDetailLayout(
                                     CompositionLocalProvider(
                                         LocalDetailPaneBack provides close.takeIf { currentWide.value },
                                     ) {
-                                        currentDetail.value()
+                                        destination.value?.let { target ->
+                                            AnimatedContent(
+                                                targetState = target,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentKey = { it.key },
+                                                transitionSpec = {
+                                                    if (currentWide.value) {
+                                                        (AppNavigationTransitions.enter togetherWith AppNavigationTransitions.exit)
+                                                            .using(null)
+                                                    } else {
+                                                        (EnterTransition.None togetherWith ExitTransition.None).using(null)
+                                                    }
+                                                },
+                                                label = "Detail selection",
+                                            ) { shown ->
+                                                CompositionLocalProvider(LocalDetailPaneTitle provides shown.title) {
+                                                    currentDetail.value(shown.state)
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -229,6 +280,8 @@ internal fun AdaptiveDetailLayout(
         )
     }
 }
+
+private data class DetailDestination<T>(val key: String, val title: String, val state: T)
 
 /** The modal owns its window and Back gesture; its source list stays composed underneath it. */
 private data class SheetDetailScene(

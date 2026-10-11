@@ -232,10 +232,11 @@ fun AppsScreen(
 
     AdaptiveDetailLayout(
         selectedKey = configPackage,
+        detailState = configFor,
         onDismiss = { configPackage = null },
         paneTitle = configFor?.label.orEmpty(),
-        detail = {
-            configFor?.let { app ->
+        detail = { shownApp ->
+            shownApp?.let { app ->
                 AppConfigSheet(app = app, appConfig = appConfig, onDismiss = { configPackage = null })
             } ?: AdaptiveDetailSheet(onDismissRequest = { configPackage = null }) {
                 Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {

@@ -761,14 +761,16 @@ fun SshKeyProviderScreen(
 
     AdaptiveDetailLayout(
         selectedKey = selectedKeyId?.let { "key:$it" } ?: selectedHistoryRequestId?.let { "history:$it" },
+        detailState = Triple(selectedKey, selectedHistoryRequestId,
+            selectedHistory?.takeIf { it.requestId == selectedHistoryRequestId }),
         onDismiss = { selectedKeyId = null; selectedHistoryRequestId = null },
         paneTitle = selectedKey?.displayName ?: selectedHistory
             ?.takeIf { it.requestId == selectedHistoryRequestId }
             ?.sshRequestHeadline(
                 knownHostname = selectedHistory?.history?.destinationHostKeyFingerprint?.let(knownHostnames::get),
             ).orEmpty(),
-        detail = {
-            selectedKey?.let { key ->
+        detail = { (shownKey, historyId, historyRequest) ->
+            shownKey?.let { key ->
                 AdaptiveDetailSheet(
                     onDismissRequest = { selectedKeyId = null },
                     modifier = Modifier.statusBarsPadding(),
@@ -848,8 +850,8 @@ fun SshKeyProviderScreen(
                 }
             }
 
-            if (selectedHistoryRequestId != null) {
-                val request = selectedHistory?.takeIf { it.requestId == selectedHistoryRequestId }
+            if (historyId != null) {
+                val request = historyRequest
                 // Keep the sheet/pane surface in place while the newly selected record loads.
                 EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
                     if (request == null) {

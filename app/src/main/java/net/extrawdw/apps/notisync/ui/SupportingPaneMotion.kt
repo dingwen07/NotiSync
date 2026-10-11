@@ -62,10 +62,10 @@ internal class SupportingPaneMotionState {
 }
 
 /**
- * During divider motion covered content keeps its measured width, including while being uncovered.
- * It expands only once the exposed area exceeds that width: details cover the list moving left,
- * or slide off moving right. Fully hiding a pane must not discard the layout we will reveal again.
- * The list can instead reflow back to its resting split width before being covered again.
+ * During divider motion covered content retains enough width to slide without rewrapping.
+ * Details follow the exposed width down to their resting split width, allowing column reflow
+ * during restoration while retaining that width when sliding offscreen. The list can also
+ * reflow back to its resting split width before being covered again.
  * A settled split and a resized window lay out normally again. Keep these measurements out of
  * snapshot state so dragging only invalidates layout.
  */
@@ -81,6 +81,7 @@ internal fun CoveringPaneContent(
     dragging: () -> Boolean,
     anchoredWidth: () -> Int?,
     restoreSplitWidth: Boolean = false,
+    minimumContentWidth: Int? = null,
     content: @Composable () -> Unit,
 ) {
     val measurements = remember(windowWidthPx) { CoveringPaneMeasurements() }
@@ -99,6 +100,9 @@ internal fun CoveringPaneContent(
         val contentWidth = when {
             !covering || measurements.contentWidth < 0 -> viewportWidth
             settled -> viewportWidth
+            // Details reflow while restoring the split, but keep their split width when
+            // sliding offscreen. Waiting until the anchor settles delays the column change.
+            minimumContentWidth != null -> viewportWidth.coerceAtLeast(minimumContentWidth)
             restoreSplitWidth && splitWidth > 0 -> viewportWidth.coerceAtLeast(splitWidth)
             viewportWidth > measurements.contentWidth -> viewportWidth
             else -> measurements.contentWidth

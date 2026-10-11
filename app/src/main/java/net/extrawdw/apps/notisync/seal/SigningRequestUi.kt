@@ -62,6 +62,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshkeyprovider.DesktopApplicationIcon
 import net.extrawdw.apps.notisync.sshkeyprovider.ProcessLineageLine
 import net.extrawdw.apps.notisync.ui.RequestDetailLayout
+import net.extrawdw.apps.notisync.ui.LocalIsDetailPane
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
 import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
@@ -203,7 +204,7 @@ internal fun SigningRequestDetail(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
     showSheetHeader: Boolean = false,
-    useWideLayout: Boolean = false,
+    useWideLayout: Boolean = LocalIsDetailPane.current,
     onBack: () -> Unit = {},
 ) {
     val status = stored.sealDisplayStatus()
@@ -218,7 +219,7 @@ internal fun SigningRequestDetail(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
         useWideLayout = useWideLayout,
-        header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
+        header = if (showSheetHeader && !LocalIsDetailPane.current) ({
             CenteredDetailItem {
                 Row(
                     Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),

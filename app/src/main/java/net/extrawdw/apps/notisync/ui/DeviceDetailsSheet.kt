@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -127,77 +126,118 @@ internal fun DeviceDetailsSheet(
     ) {
         DisableModalBottomSheetNavigationBarContrast()
         val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(),
+        val showSharing = device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified
+        val showHotspot = showSharing &&
+            (Capability.HOTSPOT_PROVIDER_V1 in device.capabilities || savedHotspot != null)
+        val supportsScreenMirror = device.supportsScreenMirrorRequest()
+        val showScreenSharing = showSharing && (supportsScreenMirror || screenMirroringEnabled)
+        val notifications: @Composable () -> Unit = {
+            Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+                        Icon(WifiNotificationIcon, contentDescription = null,
+                            modifier = Modifier.padding(12.dp).size(24.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(stringResource(R.string.device_forward_notifications_title),
+                            style = MaterialTheme.typography.titleMedium)
+                        Text(stringResource(R.string.device_forward_notifications_body),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Surface(shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NotificationForwardingSwitch(
+                            label = stringResource(R.string.device_forward_notifications_local),
+                            checked = forwardLocalNotifications,
+                            enabled = trustActionsEnabled,
+                            onCheckedChange = onForwardLocalNotificationsChange,
+                        )
+                        HorizontalDivider()
+                        NotificationForwardingSwitch(
+                            label = stringResource(R.string.device_forward_notifications_iphone),
+                            checked = forwardIphoneNotifications,
+                            enabled = trustActionsEnabled,
+                            onCheckedChange = onForwardIphoneNotificationsChange,
+                        )
+                        HorizontalDivider()
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text(stringResource(R.string.device_filters_label), Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyLarge)
+                            OutlinedButton(onClick = onShowNotificationFilters,
+                                enabled = trustActionsEnabled && hasNotificationFilters) {
+                                Text(stringResource(R.string.device_filters_manage))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        AdaptiveDetailGrid(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(),
             // Keep the viewport behind system navigation; inset only the scrollable content.
-            contentPadding = PaddingValues(
-                start = 20.dp,
-                top = 4.dp,
-                end = 20.dp,
-                bottom = 40.dp + bottomInset,
-            ),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            contentPadding = PaddingValues(start = 20.dp, top = 4.dp, end = 20.dp, bottom = 40.dp + bottomInset),
+            verticalSpacing = 18.dp,
         ) {
-            item {
-                DeviceDetailsHeader(
-                    name = name,
-                    platform = platformLabel(device.platform),
-                    verified = device.verified,
-                )
-            }
-            item {
-                DeviceDetailsField(
-                    label = stringResource(R.string.pair_field_verification_number),
-                    value = device.clientId.value,
-                    monospace = true,
-                )
-            }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            detailSection("device-details-identity") {
+                Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    DeviceDetailsHeader(
+                        name = name,
+                        platform = platformLabel(device.platform),
+                        verified = device.verified,
+                    )
                     DeviceDetailsField(
-                        label = stringResource(R.string.pair_field_identity_key),
-                        value = device.identityKeyFingerprint ?: EM_DASH,
+                        label = stringResource(R.string.pair_field_verification_number),
+                        value = device.clientId.value,
                         monospace = true,
                     )
-                    CollapsibleDeviceSection(
-                        title = stringResource(R.string.device_details_key_epoch),
-                        summary = device.keyEpoch?.let { stringResource(R.string.pair_operational_chip_title, it.epoch) }
-                            ?: stringResource(R.string.device_details_operational_unavailable),
-                        expanded = keyEpochExpanded,
-                        onToggle = { keyEpochExpanded = !keyEpochExpanded },
-                    ) {
-                        OperationalEpochDetails(device.keyEpoch)
-                    }
-                    CollapsibleDeviceSection(
-                        title = stringResource(R.string.device_details_capabilities),
-                        summary = pluralStringResource(R.plurals.device_details_capability_count,
-                            device.capabilities.size, device.capabilities.size),
-                        expanded = capabilitiesExpanded,
-                        onToggle = { capabilitiesExpanded = !capabilitiesExpanded },
-                    ) {
-                        DeviceCapabilities(device.capabilities)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        DeviceDetailsField(
+                            label = stringResource(R.string.pair_field_identity_key),
+                            value = device.identityKeyFingerprint ?: EM_DASH,
+                            monospace = true,
+                        )
+                        CollapsibleDeviceSection(
+                            title = stringResource(R.string.device_details_key_epoch),
+                            summary = device.keyEpoch?.let { stringResource(R.string.device_epoch, it.epoch) }
+                                ?: stringResource(R.string.device_details_operational_unavailable),
+                            expanded = keyEpochExpanded,
+                            onToggle = { keyEpochExpanded = !keyEpochExpanded },
+                        ) {
+                            OperationalEpochDetails(device.keyEpoch)
+                        }
+                        CollapsibleDeviceSection(
+                            title = stringResource(R.string.device_details_capabilities),
+                            summary = pluralStringResource(R.plurals.device_details_capability_count,
+                                device.capabilities.size, device.capabilities.size),
+                            expanded = capabilitiesExpanded,
+                            onToggle = { capabilitiesExpanded = !capabilitiesExpanded },
+                        ) {
+                            DeviceCapabilities(device.capabilities)
+                        }
                     }
                 }
             }
-            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
-                if (Capability.HOTSPOT_PROVIDER_V1 in device.capabilities || savedHotspot != null) item {
-                    HotspotControls(
-                        hotspotState, savedHotspot,
-                        trustActionsEnabled && Capability.HOTSPOT_PROVIDER_V1 in device.capabilities,
-                        onRefreshHotspot, onSetHotspotEnabled,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
-                    )
-                }
+            if (showHotspot) detailSection("device-details-hotspot") {
+                HotspotControls(
+                    hotspotState, savedHotspot,
+                    trustActionsEnabled && Capability.HOTSPOT_PROVIDER_V1 in device.capabilities,
+                    onRefreshHotspot, onSetHotspotEnabled,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
+                )
             }
-            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
-                val supportsScreenMirror = device.supportsScreenMirrorRequest()
+            if (showScreenSharing) {
                 val availableCodecs = availableAndroidScreenCodecs(
                     sourceCapabilities = device.capabilities.toSet(),
                     decoderSupport = screenMirrorDecoderSupport,
                 )
-                item {
+                detailSection("device-details-screen") {
                     Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         ScreenSharingHeader(
                             device = device,
@@ -219,80 +259,32 @@ internal fun DeviceDetailsSheet(
                                         enabled = screenMirrorRequestEnabled,
                                         onSelected = onScreenMirrorCodecOverrideChange,
                                     )
-                                    HorizontalDivider(Modifier.padding(top = 8.dp))
+                                    if (screenMirroringEnabled) HorizontalDivider(Modifier.padding(top = 8.dp))
                                 }
-                                ScreenControlAuthorization(
-                                    masterEnabled = screenMirroringEnabled,
-                                    enabled = screenMirroringEnabled && trustActionsEnabled,
-                                    authorized = screenControlAuthorized,
-                                    onAuthorizedChange = onScreenControlAuthorizedChange,
-                                    additionalBody = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA)
-                                        R.string.screen_mirror_device_hotspot_body else null,
-                                )
-                                HorizontalDivider(Modifier.padding(top = 8.dp))
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (screenMirroringEnabled) {
                                     ScreenControlAuthorization(
-                                        masterEnabled = screenMirroringEnabled,
-                                        enabled = trustActionsEnabled && (virtualDisplayAuthorized ||
-                                            (screenMirroringEnabled && screenControlAuthorized && virtualDisplayAvailable)),
-                                        authorized = virtualDisplayAuthorized,
-                                        onAuthorizedChange = onVirtualDisplayAuthorizedChange,
-                                        title = R.string.screen_virtual_allow_title,
-                                        body = R.string.screen_virtual_allow_body,
+                                        enabled = screenMirroringEnabled && trustActionsEnabled,
+                                        authorized = screenControlAuthorized,
+                                        onAuthorizedChange = onScreenControlAuthorizedChange,
+                                        additionalBody = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA)
+                                            R.string.screen_mirror_device_hotspot_body else null,
                                     )
-                                    if (!virtualDisplayAvailable) Text(
-                                        stringResource(R.string.screen_virtual_unavailable),
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-                item {
-                    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
-                                Icon(WifiNotificationIcon, contentDescription = null,
-                                    modifier = Modifier.padding(12.dp).size(24.dp))
-                            }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(stringResource(R.string.device_forward_notifications_title),
-                                    style = MaterialTheme.typography.titleMedium)
-                                Text(stringResource(R.string.device_forward_notifications_body),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                        Surface(shape = MaterialTheme.shapes.large,
-                            color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                            Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                NotificationForwardingSwitch(
-                                    label = stringResource(R.string.device_forward_notifications_local),
-                                    checked = forwardLocalNotifications,
-                                    enabled = trustActionsEnabled,
-                                    onCheckedChange = onForwardLocalNotificationsChange,
-                                )
-                                HorizontalDivider()
-                                NotificationForwardingSwitch(
-                                    label = stringResource(R.string.device_forward_notifications_iphone),
-                                    checked = forwardIphoneNotifications,
-                                    enabled = trustActionsEnabled,
-                                    onCheckedChange = onForwardIphoneNotificationsChange,
-                                )
-                                HorizontalDivider()
-                                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                    Text(stringResource(R.string.device_filters_label), Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyLarge)
-                                    OutlinedButton(onClick = onShowNotificationFilters,
-                                        enabled = trustActionsEnabled && hasNotificationFilters) {
-                                        Text(stringResource(R.string.device_filters_manage))
+                                    HorizontalDivider(Modifier.padding(top = 8.dp))
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        ScreenControlAuthorization(
+                                            enabled = trustActionsEnabled && (virtualDisplayAuthorized ||
+                                                (screenMirroringEnabled && screenControlAuthorized && virtualDisplayAvailable)),
+                                            authorized = virtualDisplayAuthorized,
+                                            onAuthorizedChange = onVirtualDisplayAuthorizedChange,
+                                            title = R.string.screen_virtual_allow_title,
+                                            body = R.string.screen_virtual_allow_body,
+                                        )
+                                        if (!virtualDisplayAvailable) Text(
+                                            stringResource(R.string.screen_virtual_unavailable),
+                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
                                     }
                                 }
                             }
@@ -300,40 +292,37 @@ internal fun DeviceDetailsSheet(
                     }
                 }
             }
-            if (device.status == TrustStatus.TRUSTED) {
-                item {
-                    Button(
-                        onClick = onRemove,
-                        enabled = trustActionsEnabled,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(
-                            FilledDeleteIcon,
-                            contentDescription = null,
-                            modifier = Modifier.size(ButtonDefaults.IconSize),
-                        )
-                        androidx.compose.foundation.layout.Spacer(
-                            Modifier.size(ButtonDefaults.IconSpacing)
-                        )
-                        Text(stringResource(R.string.device_remove_desc, name))
-                    }
+            if (showSharing) detailSection("device-details-notifications", content = notifications)
+            if (device.status == TrustStatus.TRUSTED) detailSection("device-details-remove", fullLine = true) {
+                Button(
+                    onClick = onRemove,
+                    enabled = trustActionsEnabled,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        FilledDeleteIcon,
+                        contentDescription = null,
+                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        Modifier.size(ButtonDefaults.IconSpacing)
+                    )
+                    Text(stringResource(R.string.device_remove_desc, name))
                 }
             }
-            if (device.status == TrustStatus.REVOKED) {
-                item {
-                    RevokedDeviceActions(
-                        name = name,
-                        revokedAt = device.revokedAt,
-                        nowMillis = nowMillis,
-                        actionsEnabled = trustActionsEnabled,
-                        onRestore = onRestore,
-                        onPurge = onPurge,
-                    )
-                }
+            if (device.status == TrustStatus.REVOKED) detailSection("device-details-restore", fullLine = true) {
+                RevokedDeviceActions(
+                    name = name,
+                    revokedAt = device.revokedAt,
+                    nowMillis = nowMillis,
+                    actionsEnabled = trustActionsEnabled,
+                    onRestore = onRestore,
+                    onPurge = onPurge,
+                )
             }
         }
     }
@@ -520,7 +509,6 @@ private fun ScreenMirrorCodecSelector(
 
 @Composable
 private fun ScreenControlAuthorization(
-    masterEnabled: Boolean,
     enabled: Boolean,
     authorized: Boolean,
     onAuthorizedChange: (Boolean) -> Unit,
@@ -563,14 +551,6 @@ private fun ScreenControlAuthorization(
         additionalBody?.let {
             Text(
                 stringResource(it),
-                modifier = Modifier.padding(horizontal = 16.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (!masterEnabled) {
-            Text(
-                stringResource(R.string.screen_mirror_device_master_off),
                 modifier = Modifier.padding(horizontal = 16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

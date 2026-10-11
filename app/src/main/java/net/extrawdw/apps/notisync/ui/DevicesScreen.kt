@@ -236,13 +236,14 @@ fun DevicesScreen(
 
     AdaptiveDetailLayout(
         selectedKey = filterDeviceId?.let { "filter:$it" } ?: detailsSheetFor?.let { "device:$it" },
+        detailState = filterSheetFor to roster.firstOrNull { it.clientId.value == detailsSheetFor },
         onDismiss = { if (filterDeviceId != null) filterDeviceId = null else detailsSheetFor = null },
         paneTitle = filterSheetFor?.let {
             stringResource(R.string.device_filters_title, it.displayName ?: stringResource(R.string.device_unknown))
         } ?: roster.firstOrNull { it.clientId.value == detailsSheetFor }?.displayName
             ?: stringResource(R.string.device_unknown),
-        detail = {
-            filterSheetFor?.let { device ->
+        detail = { (shownFilter, shownDevice) ->
+            shownFilter?.let { device ->
                 NotificationFilterSheet(
                     deviceName = device.displayName ?: stringResource(R.string.device_unknown),
                     filter = notificationFilters[device.clientId.value],
@@ -251,100 +252,98 @@ fun DevicesScreen(
                 )
             }
 
-            detailsSheetFor?.takeIf { filterSheetFor == null }?.let { clientId ->
-                roster.firstOrNull { it.clientId.value == clientId }?.let { device ->
-                    DeviceDetailsSheet(
-                        device = device,
-                        nowMillis = now,
-                        hotspotState = hotspotStates[device.clientId],
-                        savedHotspot = savedHotspots[device.clientId],
-                        onRefreshHotspot = { graph.hotspotController.refresh(device.clientId) },
-                        onSetHotspotEnabled = { graph.hotspotController.setEnabled(device.clientId, it) },
-                        hasNotificationFilters = notificationFilters[device.clientId.value]?.rules?.isNotEmpty() == true,
-                        onShowNotificationFilters = { filterDeviceId = device.clientId.value },
-                        screenMirroringEnabled = screenMirroringEnabled,
-                        virtualDisplayAuthorized = device.clientId.value in virtualDisplayPeers,
-                        virtualDisplayAvailable = virtualDisplaySupported,
-                        onVirtualDisplayAuthorizedChange = rememberVirtualDisplayAuthorizationChange(
-                            peerId = device.clientId,
-                            peerName = device.displayName ?: device.clientId.shortForm(),
-                            authorizations = graph.screenMirrorAuthorizations,
-                            isEligible = {
-                                !graph.trust.quarantined.value && graph.settings.screenMirroringEnabled.value &&
-                                    graph.screenMirrorShizuku.virtualDisplaySupported.value &&
-                                    graph.trust.roster.value.any {
-                                        it.clientId == device.clientId && it.ownDevice && it.verified &&
-                                            it.status == TrustStatus.TRUSTED
-                                    }
-                            },
-                        ),
-                        screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
-                        screenMirrorRequestEnabled = !quarantined,
-                        trustActionsEnabled = !quarantined,
-                        forwardLocalNotifications = notificationForwarding.isEnabled(
-                            device.clientId, OriginPlatform.ANDROID_LOCAL,
-                        ),
-                        forwardIphoneNotifications = notificationForwarding.isEnabled(
-                            device.clientId, OriginPlatform.IOS_ANCS,
-                        ),
-                        onForwardLocalNotificationsChange = { enabled ->
-                            graph.scope.launch {
-                                graph.notificationForwarding.setEnabled(
-                                    device.clientId, OriginPlatform.ANDROID_LOCAL, enabled,
-                                )
-                            }
-                        },
-                        onForwardIphoneNotificationsChange = { enabled ->
-                            graph.scope.launch {
-                                graph.notificationForwarding.setEnabled(
-                                    device.clientId, OriginPlatform.IOS_ANCS, enabled,
-                                )
-                            }
-                        },
-                        screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
-                        screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
-                        onScreenControlAuthorizedChange = { authorized ->
-                            graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
-                        },
-                        onScreenMirrorCodecOverrideChange = { codec ->
-                            graph.scope.launch {
-                                graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
-                            }
-                        },
-                        onStartScreenMirror = {
-                            detailsSheetFor = null
-                            onStartScreenMirror(device.clientId)
-                        },
-                        onRemove = {
-                            detailsSheetFor = null
-                            graph.launchDurableTrustAction(context) {
-                                if (graph.trust.revokeLocal(
-                                        device.clientId,
-                                        System.currentTimeMillis(),
-                                    )
-                                ) graph.broadcastTrust()
-                            }
-                        },
-                        onRestore = {
-                            detailsSheetFor = null
-                            graph.launchDurableTrustAction(context) {
-                                if (graph.trust.restoreTrust(device.clientId, System.currentTimeMillis())) {
-                                    graph.broadcastTrust()
+            shownDevice?.takeIf { shownFilter == null }?.let { device ->
+                DeviceDetailsSheet(
+                    device = device,
+                    nowMillis = now,
+                    hotspotState = hotspotStates[device.clientId],
+                    savedHotspot = savedHotspots[device.clientId],
+                    onRefreshHotspot = { graph.hotspotController.refresh(device.clientId) },
+                    onSetHotspotEnabled = { graph.hotspotController.setEnabled(device.clientId, it) },
+                    hasNotificationFilters = notificationFilters[device.clientId.value]?.rules?.isNotEmpty() == true,
+                    onShowNotificationFilters = { filterDeviceId = device.clientId.value },
+                    screenMirroringEnabled = screenMirroringEnabled,
+                    virtualDisplayAuthorized = device.clientId.value in virtualDisplayPeers,
+                    virtualDisplayAvailable = virtualDisplaySupported,
+                    onVirtualDisplayAuthorizedChange = rememberVirtualDisplayAuthorizationChange(
+                        peerId = device.clientId,
+                        peerName = device.displayName ?: device.clientId.shortForm(),
+                        authorizations = graph.screenMirrorAuthorizations,
+                        isEligible = {
+                            !graph.trust.quarantined.value && graph.settings.screenMirroringEnabled.value &&
+                                graph.screenMirrorShizuku.virtualDisplaySupported.value &&
+                                graph.trust.roster.value.any {
+                                    it.clientId == device.clientId && it.ownDevice && it.verified &&
+                                        it.status == TrustStatus.TRUSTED
                                 }
-                            }
                         },
-                        onPurge = {
-                            detailsSheetFor = null
-                            graph.launchDurableTrustAction(context) {
-                                graph.trust.purgeRevoked(device.clientId)
-                                // Forget this peer's filter only after its trust-store removal was durable.
-                                graph.notificationFilters.remove(device.clientId)
-                                kotlinx.coroutines.runBlocking { graph.hotspotCredentials.forget(device.clientId) }
+                    ),
+                    screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
+                    screenMirrorRequestEnabled = !quarantined,
+                    trustActionsEnabled = !quarantined,
+                    forwardLocalNotifications = notificationForwarding.isEnabled(
+                        device.clientId, OriginPlatform.ANDROID_LOCAL,
+                    ),
+                    forwardIphoneNotifications = notificationForwarding.isEnabled(
+                        device.clientId, OriginPlatform.IOS_ANCS,
+                    ),
+                    onForwardLocalNotificationsChange = { enabled ->
+                        graph.scope.launch {
+                            graph.notificationForwarding.setEnabled(
+                                device.clientId, OriginPlatform.ANDROID_LOCAL, enabled,
+                            )
+                        }
+                    },
+                    onForwardIphoneNotificationsChange = { enabled ->
+                        graph.scope.launch {
+                            graph.notificationForwarding.setEnabled(
+                                device.clientId, OriginPlatform.IOS_ANCS, enabled,
+                            )
+                        }
+                    },
+                    screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
+                    screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
+                    onScreenControlAuthorizedChange = { authorized ->
+                        graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                    },
+                    onScreenMirrorCodecOverrideChange = { codec ->
+                        graph.scope.launch {
+                            graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
+                        }
+                    },
+                    onStartScreenMirror = {
+                        detailsSheetFor = null
+                        onStartScreenMirror(device.clientId)
+                    },
+                    onRemove = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.revokeLocal(
+                                    device.clientId,
+                                    System.currentTimeMillis(),
+                                )
+                            ) graph.broadcastTrust()
+                        }
+                    },
+                    onRestore = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.restoreTrust(device.clientId, System.currentTimeMillis())) {
+                                graph.broadcastTrust()
                             }
-                        },
-                        onDismiss = { detailsSheetFor = null },
-                    )
-                }
+                        }
+                    },
+                    onPurge = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            graph.trust.purgeRevoked(device.clientId)
+                            // Forget this peer's filter only after its trust-store removal was durable.
+                            graph.notificationFilters.remove(device.clientId)
+                            kotlinx.coroutines.runBlocking { graph.hotspotCredentials.forget(device.clientId) }
+                        }
+                    },
+                    onDismiss = { detailsSheetFor = null },
+                )
             }
         },
     ) {

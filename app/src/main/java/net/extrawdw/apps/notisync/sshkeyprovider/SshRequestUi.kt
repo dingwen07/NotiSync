@@ -86,6 +86,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.RequestDetailLayout
+import net.extrawdw.apps.notisync.ui.LocalIsDetailPane
 import net.extrawdw.apps.notisync.ui.withContentSpacing
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
@@ -380,7 +381,7 @@ internal fun SshRequestDetail(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     showSheetHeader: Boolean = false,
-    useWideLayout: Boolean = false,
+    useWideLayout: Boolean = LocalIsDetailPane.current,
     onBack: () -> Unit = {},
 ) {
     val request = details.request
@@ -391,7 +392,7 @@ internal fun SshRequestDetail(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
         useWideLayout = useWideLayout,
-        header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
+        header = if (showSheetHeader && !LocalIsDetailPane.current) ({
             CenteredRequestItem {
                 Row(
                     Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),

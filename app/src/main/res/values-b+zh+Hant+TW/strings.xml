@@ -728,7 +728,7 @@
     <string name="device_details_expanded">已展開</string>
     <string name="device_details_collapsed">已收合</string>
     <plurals name="device_details_capability_count">
-        <item quantity="other">已宣告 %1$d 項功能</item>
+        <item quantity="other">%1$d 項功能</item>
     </plurals>
     <string name="device_details_verified">✓ 已驗證</string>
     <string name="device_details_not_verified">✗ 未驗證</string>
@@ -773,7 +773,6 @@
     <string name="screen_mirror_device_title">允許螢幕控制</string>
     <string name="screen_mirror_device_body">此裝置可透過區域連線啟動經過身分驗證的螢幕工作階段，無需再次核准。</string>
     <string name="screen_mirror_device_hotspot_body">它也能控制您的熱點並讀取網路名稱和密碼。</string>
-    <string name="screen_mirror_device_master_off">請先在設定中啟用螢幕分享。</string>
     <string name="screen_mirror_device_start">鏡像並控制螢幕</string>
     <string name="screen_mirror_device_start_desc">鏡像並控制 %1$s</string>
     <string name="screen_mirror_codec_title">視訊編解碼器</string>

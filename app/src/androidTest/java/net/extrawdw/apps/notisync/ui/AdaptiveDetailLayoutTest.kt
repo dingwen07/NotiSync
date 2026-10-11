@@ -105,7 +105,7 @@ class AdaptiveDetailLayoutTest {
     }
 
     @Test
-    fun draggingCoversTheListAndSlidesDetailAwayWithoutRewrappingOutgoingText() {
+    fun draggingCoversTheListReflowsDetailToSplitThenSlidesItAwayWithoutRewrapping() {
         val listText = java.util.concurrent.atomic.AtomicReference<TextLayoutResult>()
         val detailText = java.util.concurrent.atomic.AtomicReference<TextLayoutResult>()
         val paragraph = "Pane content should stay readable while the divider moves. ".repeat(12)
@@ -113,6 +113,7 @@ class AdaptiveDetailLayoutTest {
             var selected by rememberSaveable { mutableStateOf<String?>(null) }
             MaterialTheme {
                 AdaptiveDetailLayout(
+                    detailState = Unit,
                     selectedKey = selected,
                     onDismiss = { selected = null },
                     detail = {
@@ -145,12 +146,19 @@ class AdaptiveDetailLayoutTest {
         }
         capture("adaptive-drag-covering.png")
         val expandedDetail = detailText.get()
+        var previousDetailWidth = expandedDetail.size.width
         repeat(4) {
             compose.onRoot().performTouchInput { moveBy(Offset(step, 0f), delayMillis = 100) }
             compose.runOnIdle {
-                org.junit.Assert.assertEquals("outgoing detail width", expandedDetail.size.width, detailText.get().size.width)
-                org.junit.Assert.assertEquals("outgoing detail lines", expandedDetail.lineCount, detailText.get().lineCount)
+                val width = detailText.get().size.width
+                org.junit.Assert.assertTrue("detail shrinks toward split", width <= previousDetailWidth)
+                org.junit.Assert.assertTrue("outgoing detail keeps at least split width", width >= detailBefore.size.width)
+                previousDetailWidth = width
             }
+        }
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals("outgoing detail width", detailBefore.size.width, detailText.get().size.width)
+            org.junit.Assert.assertEquals("outgoing detail lines", detailBefore.lineCount, detailText.get().lineCount)
         }
         capture("adaptive-drag-outgoing.png")
         val widenedList = listText.get()
@@ -184,6 +192,7 @@ class AdaptiveDetailLayoutTest {
         }
         compose.onNodeWithText("Open detail").assertIsNotDisplayed()
         val fullDetail = detailText.get()
+        previousDetailWidth = fullDetail.size.width
         val edgeDivider = compose.onNodeWithTag("detail-pane-divider").fetchSemanticsNode().boundsInRoot.center
         compose.onRoot().performTouchInput { down(edgeDivider) }
         repeat(4) {
@@ -191,7 +200,10 @@ class AdaptiveDetailLayoutTest {
             compose.runOnIdle {
                 org.junit.Assert.assertEquals("uncovered list width", listBeforeHiding.size.width, listText.get().size.width)
                 org.junit.Assert.assertEquals("uncovered list lines", listBeforeHiding.lineCount, listText.get().lineCount)
-                org.junit.Assert.assertEquals("sliding expanded detail width", fullDetail.size.width, detailText.get().size.width)
+                val width = detailText.get().size.width
+                org.junit.Assert.assertTrue("restoring detail shrinks during drag", width < previousDetailWidth)
+                org.junit.Assert.assertTrue("restoring detail stays above split width", width >= detailBefore.size.width)
+                previousDetailWidth = width
             }
         }
         capture("adaptive-drag-uncovering.png")
@@ -236,6 +248,7 @@ class AdaptiveDetailLayoutTest {
         MaterialTheme {
             Box(Modifier.requiredWidth(if (wide.value) 1200.dp else 420.dp).fillMaxHeight()) {
                 AdaptiveDetailLayout(
+                    detailState = Unit,
                     selectedKey = selected,
                     directive = directive,
                     onDismiss = { selected = null },

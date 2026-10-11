@@ -138,40 +138,39 @@ fun SealScreen() {
 
     AdaptiveDetailLayout(
         selectedKey = selectedRequestId,
+        detailState = Triple(selected, selectedLoading, selectedLoadError),
         onDismiss = { selectedRequestId = null },
         paneTitle = selected?.sealRequestHeadline().orEmpty(),
-        detail = {
-            if (selectedRequestId != null) {
-                EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
-                    if (selectedLoadError || (selectedLoading && selected == null)) {
-                        Column(
-                            Modifier.fillMaxWidth().padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            if (selectedLoadError) {
-                                Text(stringResource(R.string.history_load_failed))
-                                TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
-                            } else CircularProgressIndicator()
-                        }
+        detail = { (shownRequest, loadingDetail, loadError) ->
+            EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
+                if (loadError || (loadingDetail && shownRequest == null)) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (loadError) {
+                            Text(stringResource(R.string.history_load_failed))
+                            TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
+                        } else CircularProgressIndicator()
                     }
-                    selected?.takeUnless { it.opensSealReview() }?.let { stored ->
-                        val peer = roster.firstOrNull { it.clientId == stored.senderClientId }
-                        val requesterName = peer?.displayName ?: stored.senderClientId.shortForm()
-                        val identity = enrollment.displayIdentity
-                            ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
-                            ?: stringResource(R.string.seal_openpgp_identity)
-                        SigningRequestDetail(
-                            stored = stored,
-                            requesterName = requesterName,
-                            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                            signingIdentity = identity,
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            contentPadding = historySheetContentPadding(),
-                            showSheetHeader = true,
-                            onBack = { selectedRequestId = null },
-                        )
-                    }
+                }
+                shownRequest?.takeUnless { it.opensSealReview() }?.let { stored ->
+                    val peer = roster.firstOrNull { it.clientId == stored.senderClientId }
+                    val requesterName = peer?.displayName ?: stored.senderClientId.shortForm()
+                    val identity = enrollment.displayIdentity
+                        ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
+                        ?: stringResource(R.string.seal_openpgp_identity)
+                    SigningRequestDetail(
+                        stored = stored,
+                        requesterName = requesterName,
+                        requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                        signingIdentity = identity,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        contentPadding = historySheetContentPadding(),
+                        showSheetHeader = true,
+                        onBack = { selectedRequestId = null },
+                    )
                 }
             }
         },
