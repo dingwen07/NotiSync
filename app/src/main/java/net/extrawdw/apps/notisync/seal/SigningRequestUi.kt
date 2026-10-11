@@ -29,6 +29,8 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.folder as FolderIco
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.person as PersonIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.person_edit as PersonEditIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.person_shield as PersonShieldIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as ScheduleIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.verified_user as VerifiedUserIcon
@@ -59,7 +61,7 @@ import java.util.Date
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshkeyprovider.DesktopApplicationIcon
 import net.extrawdw.apps.notisync.sshkeyprovider.ProcessLineageLine
-import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
+import net.extrawdw.apps.notisync.ui.RequestDetailLayout
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
 import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
@@ -201,6 +203,7 @@ internal fun SigningRequestDetail(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
     showSheetHeader: Boolean = false,
+    useWideLayout: Boolean = false,
     onBack: () -> Unit = {},
 ) {
     val status = stored.sealDisplayStatus()
@@ -211,10 +214,10 @@ internal fun SigningRequestDetail(
     val application = remember(stored, applications) { stored.applicationAnchor(applications.registry) }
     val process = remember(stored, applications) { stored.processLabel(applications.registry) }
 
-    HistorySheetLazyColumn(
+    RequestDetailLayout(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        useWideLayout = useWideLayout,
         header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
             CenteredDetailItem {
                 Row(
@@ -234,8 +237,7 @@ internal fun SigningRequestDetail(
                 }
             }
         }) else null,
-    ) {
-        item {
+        summary = {
             CenteredDetailItem {
                 SealHero(
                     status = status,
@@ -257,10 +259,8 @@ internal fun SigningRequestDetail(
                     shortHash = stored.request.payloadSha256.toHex().take(7),
                 )
             }
-        }
 
-        if (stored.state == OpenPgpRequestState.PENDING_REVIEW) {
-            item {
+            if (stored.state == OpenPgpRequestState.PENDING_REVIEW) {
                 CenteredDetailItem {
                     Surface(
                         color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -286,42 +286,8 @@ internal fun SigningRequestDetail(
                     }
                 }
             }
-        }
-
-        if (commit == null && tag == null) {
-            item {
-                CenteredDetailItem {
-                    SealCard(
-                        title = stringResource(
-                            when (stored.request.objectKind) {
-                                OpenPgpObjectKind.GIT_COMMIT -> R.string.seal_commit_section
-                                OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_section
-                            }
-                        ),
-                        icon = AccountTreeIcon,
-                    ) {
-                        Text(
-                            stringResource(R.string.seal_details_unavailable),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        } else if (commit != null) {
-            item {
-                CenteredDetailItem {
-                    CommitCard(commit)
-                }
-            }
-        } else if (tag != null) {
-            item {
-                CenteredDetailItem {
-                    TagCard(tag)
-                }
-            }
-        }
-
-        item {
+        },
+        requestInfo = {
             CenteredDetailItem {
                 SealCard(
                     title = stringResource(R.string.seal_approval_section),
@@ -351,9 +317,7 @@ internal fun SigningRequestDetail(
                     )
                 }
             }
-        }
 
-        item {
             CenteredDetailItem {
                 SealCard(
                     title = stringResource(R.string.seal_request_section),
@@ -392,6 +356,33 @@ internal fun SigningRequestDetail(
                         monospace = true,
                     )
                 }
+            }
+        },
+    ) {
+        if (commit == null && tag == null) {
+            CenteredDetailItem {
+                SealCard(
+                    title = stringResource(
+                        when (stored.request.objectKind) {
+                            OpenPgpObjectKind.GIT_COMMIT -> R.string.seal_commit_section
+                            OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_section
+                        }
+                    ),
+                    icon = AccountTreeIcon,
+                ) {
+                    Text(
+                        stringResource(R.string.seal_details_unavailable),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else if (commit != null) {
+            CenteredDetailItem {
+                CommitCard(commit)
+            }
+        } else if (tag != null) {
+            CenteredDetailItem {
+                TagCard(tag)
             }
         }
     }
@@ -489,7 +480,7 @@ private fun CommitCard(commit: GitCommitDetails) {
         HorizontalDivider()
         IdentityLine(PersonIcon, stringResource(R.string.seal_author), commit.author)
         HorizontalDivider()
-        IdentityLine(VerifiedUserIcon, stringResource(R.string.seal_created_by), commit.committer)
+        IdentityLine(PersonEditIcon, stringResource(R.string.seal_committer), commit.committer)
         HorizontalDivider()
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -562,7 +553,7 @@ private fun TagCard(tag: GitTagDetails) {
             }
         }
         HorizontalDivider()
-        IdentityLine(PersonIcon, stringResource(R.string.seal_created_by), tag.tagger)
+        IdentityLine(PersonShieldIcon, stringResource(R.string.seal_tagger), tag.tagger)
         HorizontalDivider()
         SealRecordLine(stringResource(R.string.seal_tag_target_type), tag.objectType)
         SealRecordLine(stringResource(R.string.seal_tag_target), tag.objectId, monospace = true)

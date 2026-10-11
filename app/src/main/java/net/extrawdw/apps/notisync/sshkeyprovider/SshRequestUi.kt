@@ -85,7 +85,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
+import net.extrawdw.apps.notisync.ui.RequestDetailLayout
+import net.extrawdw.apps.notisync.ui.withContentSpacing
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
 import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
@@ -316,12 +317,8 @@ internal fun SshReviewContent(
             }
             is SshReviewScreenState.Details -> SshRequestDetail(
                 details = state,
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding() + 16.dp,
-                ),
+                useWideLayout = true,
+                contentPadding = padding.withContentSpacing(horizontal = 20.dp, top = 8.dp, bottom = 16.dp),
             )
         }
     }
@@ -383,16 +380,17 @@ internal fun SshRequestDetail(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     showSheetHeader: Boolean = false,
+    useWideLayout: Boolean = false,
     onBack: () -> Unit = {},
 ) {
     val request = details.request
     val status = request.displayStatus()
     val pending = request.state == SshProviderRequestState.PENDING_REVIEW
     val formatter = rememberDetailedDateTimeFormatter()
-    HistorySheetLazyColumn(
+    RequestDetailLayout(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        useWideLayout = useWideLayout,
         header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
             CenteredRequestItem {
                 Row(
@@ -412,8 +410,7 @@ internal fun SshRequestDetail(
                 }
             }
         }) else null,
-    ) {
-        item {
+        summary = {
             CenteredRequestItem {
                 SshRequestHero(
                     request,
@@ -423,9 +420,7 @@ internal fun SshRequestDetail(
                     approvalPresentation = pending,
                 )
             }
-        }
-        if (pending) {
-            item {
+            if (pending) {
                 CenteredRequestItem {
                     Surface(
                         color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -451,16 +446,8 @@ internal fun SshRequestDetail(
                     }
                 }
             }
-        }
-        item {
-            CenteredRequestItem {
-                when (request.kind) {
-                    SshProviderRequestKind.SIGN -> SignRequestCard(details)
-                    SshProviderRequestKind.IMPORT -> ImportRequestCard(details)
-                }
-            }
-        }
-        item {
+        },
+        requestInfo = {
             CenteredRequestItem {
                 SshKeyPreviewCard(
                     name = details.keyName,
@@ -475,8 +462,6 @@ internal fun SshRequestDetail(
                     },
                 )
             }
-        }
-        item {
             CenteredRequestItem {
                 RequestCard(
                     title = stringResource(R.string.ssh_key_provider_request_section),
@@ -504,6 +489,13 @@ internal fun SshRequestDetail(
                         monospace = true,
                     )
                 }
+            }
+        },
+    ) {
+        CenteredRequestItem {
+            when (request.kind) {
+                SshProviderRequestKind.SIGN -> SignRequestCard(details)
+                SshProviderRequestKind.IMPORT -> ImportRequestCard(details)
             }
         }
     }

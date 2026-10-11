@@ -65,6 +65,7 @@ import net.extrawdw.apps.notisync.notification.requestPageObservationState
 import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
+import net.extrawdw.apps.notisync.ui.withContentSpacing
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
@@ -385,7 +386,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     }
 }
 
-private sealed interface ReviewScreenState {
+internal sealed interface ReviewScreenState {
     data object Loading : ReviewScreenState
     data class Details(
         val request: StoredOpenPgpRequest,
@@ -399,7 +400,7 @@ private sealed interface ReviewScreenState {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReviewContent(
+internal fun ReviewContent(
     state: ReviewScreenState,
     onApprove: () -> Unit,
     onReject: () -> Unit,
@@ -454,12 +455,8 @@ private fun ReviewContent(
                 requesterName = state.requesterName,
                 requesterIdentityKeyFingerprint = state.requesterIdentityKeyFingerprint,
                 signingIdentity = state.signingIdentity,
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    top = padding.calculateTopPadding() + 8.dp,
-                    end = 20.dp,
-                    bottom = padding.calculateBottomPadding() + 16.dp,
-                ),
+                useWideLayout = true,
+                contentPadding = padding.withContentSpacing(horizontal = 20.dp, top = 8.dp, bottom = 16.dp),
             )
         }
     }

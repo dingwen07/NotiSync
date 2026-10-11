@@ -356,7 +356,8 @@
     <string name="seal_hash">Hash %1$s</string>
     <string name="seal_commit_section">Commit</string>
     <string name="seal_author">Author</string>
-    <string name="seal_created_by">Created by</string>
+    <string name="seal_committer">Committer</string>
+    <string name="seal_tagger">Tagger</string>
     <string name="seal_tree">Tree</string>
     <string name="seal_parent">Parent Commit</string>
     <string name="seal_tag_section">Annotated Tag</string>

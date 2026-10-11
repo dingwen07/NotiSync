@@ -336,11 +336,12 @@
     <string name="seal_review_title">审核 Git 提交</string>
     <string name="seal_review_guidance">您是否识别此签名请求？批准前，请确认 Git 提交消息、身份和基础版本。此处不显示具体的文件更改。</string>
     <string name="seal_tag_review_title">审核 Git 标签</string>
-    <string name="seal_tag_review_guidance">您是否识别此签名请求？批准前，请确认标签名称、消息、创建者和目标对象。</string>
+    <string name="seal_tag_review_guidance">您是否识别此签名请求？批准前，请确认标签名称、消息、标签创建者和目标对象。</string>
     <string name="seal_hash">哈希 %1$s</string>
     <string name="seal_commit_section">Git 提交</string>
     <string name="seal_author">作者</string>
-    <string name="seal_created_by">创建者</string>
+    <string name="seal_committer">提交者</string>
+    <string name="seal_tagger">标签创建者</string>
     <string name="seal_tree">树</string>
     <string name="seal_parent">父提交</string>
     <string name="seal_tag_section">附注标签</string>
