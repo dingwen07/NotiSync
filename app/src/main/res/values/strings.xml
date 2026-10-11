@@ -24,6 +24,7 @@
     <string name="menu_reset">Reset</string>
     <string name="menu_save_failed">Could not save menu changes.</string>
     <string name="open_features">Open menu</string>
+    <string name="close_features">Close menu</string>
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 

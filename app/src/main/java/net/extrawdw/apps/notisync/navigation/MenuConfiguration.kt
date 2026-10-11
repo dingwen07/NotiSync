@@ -30,8 +30,10 @@ data class MenuConfiguration(
 
     fun destinations(): List<MenuDestination> = normalized().order.mapNotNull(MenuDestination::fromId)
 
-    fun navigationDestinations(limit: Int): List<MenuDestination> =
-        destinations().filter { it.id in normalized().navigation }.take(limit)
+    /** Expanded navigation keeps the saved order but ignores visibility and compact item limits. */
+    fun navigationDestinations(limit: Int, showAll: Boolean = false): List<MenuDestination> =
+        if (showAll) destinations() else
+            destinations().filter { it.id in normalized().navigation }.take(limit)
 
     fun overflowDestinations(limit: Int): List<MenuDestination> {
         val visible = navigationDestinations(limit).toSet()

@@ -22,10 +22,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
@@ -46,8 +48,10 @@ import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
+import androidx.compose.material3.ModalWideNavigationRail
 import androidx.compose.material3.WideNavigationRail
 import androidx.compose.material3.WideNavigationRailDefaults
+import androidx.compose.material3.WideNavigationRailState
 import androidx.compose.material3.WideNavigationRailValue
 import androidx.compose.material3.rememberWideNavigationRailState
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
@@ -61,6 +65,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -129,10 +134,12 @@ import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.MenuManagementScreen
 import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
 import net.extrawdw.apps.notisync.navigation.AppNavigationTransitions
+import net.extrawdw.apps.notisync.navigation.AnimatedRailEntry
 import net.extrawdw.apps.notisync.navigation.MenuDestination
 import net.extrawdw.apps.notisync.navigation.icon
 import net.extrawdw.apps.notisync.navigation.label
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu as MenuIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu_open as MenuOpenIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
@@ -415,7 +422,6 @@ fun NotiSyncRoot(
     val resources by rememberUpdatedState(LocalResources.current)
     val graph = rememberGraph()
     val menuConfiguration by graph.settings.menuConfiguration.collectAsStateWithLifecycle()
-    val orderedDestinations = menuConfiguration.destinations().map(AppDestination::fromMenu)
     val pairing = remember { PairingManager(graph) }
     val pairingUi = androidx.lifecycle.viewmodel.compose.viewModel { PairingUiState() }
     val navController = rememberNavController()
@@ -606,17 +612,44 @@ fun NotiSyncRoot(
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val suiteIsRail = layoutType == NavigationSuiteType.WideNavigationRailCollapsed ||
         layoutType == NavigationSuiteType.WideNavigationRailExpanded
+    // Standard expansion shares space with content on wider windows. Medium windows keep
+    // the modal variant so opening all destinations does not squeeze the page.
+    val useModalRail = !adaptiveInfo.windowSizeClass.isWidthAtLeastBreakpoint(
+        WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND,
+    )
+    val railState = rememberWideNavigationRailState()
+    val railExpanded = suiteIsRail && railState.targetValue == WideNavigationRailValue.Expanded
+    val itemLayoutType = if (railExpanded) NavigationSuiteType.WideNavigationRailExpanded else layoutType
     val railItemSpacing = if (adaptiveInfo.windowSizeClass.isHeightAtLeastBreakpoint(
             WindowSizeClass.HEIGHT_DP_EXPANDED_LOWER_BOUND,
         )) 12.dp else 8.dp
     val navigationLimit = if (suiteIsDrawer) 8 else if (suiteIsRail) 7 else 5
-    val visibleDestinations = if (suiteIsDrawer) orderedDestinations else
-        menuConfiguration.navigationDestinations(navigationLimit).map(AppDestination::fromMenu)
+    val collapsedDestinations = menuConfiguration.navigationDestinations(navigationLimit)
+        .map(AppDestination::fromMenu)
+    // Keep every rail entry at a stable composition position; visibility animates per entry.
+    val navigationDestinations = menuConfiguration.navigationDestinations(
+        limit = navigationLimit,
+        showAll = suiteIsDrawer || suiteIsRail,
+    ).map(AppDestination::fromMenu)
     val overflowDestinations = menuConfiguration.overflowDestinations(navigationLimit).map(AppDestination::fromMenu)
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
     var pendingFeatureDestination by remember { mutableStateOf<AppDestination?>(null) }
     val configuration = LocalConfiguration.current
+
+    LaunchedEffect(suiteIsRail) {
+        if (suiteIsRail) featureDrawerState.close()
+        else railState.snapTo(WideNavigationRailValue.Collapsed)
+    }
+
+    fun navigateFromNavigation(action: () -> Unit) {
+        if (railExpanded && useModalRail) {
+            drawerScope.launch {
+                railState.collapse()
+                action()
+            }
+        } else action()
+    }
 
     // Refresh labels after locale changes and retry any background rate-limited update on foregrounding.
     LaunchedEffect(configuration.locales.toLanguageTags(), foregroundResumeGeneration) {
@@ -629,42 +662,61 @@ fun NotiSyncRoot(
         openMenuDestination?.let {
             showPairing = false
             featureDrawerState.close()
+            if (useModalRail) railState.collapse()
             navController.navigateToTopLevel(AppDestination.fromMenu(it))
             onOpenMenuDestinationConsumed()
         }
     }
 
     val navigationItems: @Composable () -> Unit = {
-        visibleDestinations.forEach { dest ->
-            NavigationSuiteItem(
-                navigationSuiteType = layoutType,
-                selected = currentDestination.isOn(dest),
-                onClick = { navController.navigateToTopLevel(dest) },
-                icon = { TopLevelNavIcon(dest) },
-                label = { TopLevelNavLabel(dest) },
-            )
+        navigationDestinations.forEach { dest ->
+            key(dest) {
+                val item: @Composable () -> Unit = {
+                    NavigationSuiteItem(
+                        navigationSuiteType = itemLayoutType,
+                        selected = currentDestination.isOn(dest),
+                        onClick = { navigateFromNavigation { navController.navigateToTopLevel(dest) } },
+                        icon = { TopLevelNavIcon(dest) },
+                        label = { TopLevelNavLabel(dest) },
+                    )
+                }
+                if (suiteIsRail) {
+                    AnimatedRailEntry(
+                        visible = railExpanded || dest in collapsedDestinations,
+                        spacingAfter = if (!railExpanded && dest != collapsedDestinations.lastOrNull())
+                            railItemSpacing else 0.dp,
+                        content = item,
+                    )
+                } else item()
+            }
         }
-        if (suiteIsDrawer) {
-            HorizontalDivider()
+        val utilities: @Composable () -> Unit = {
+            if (suiteIsDrawer) HorizontalDivider() else Spacer(Modifier.height(12.dp))
             NavigationSuiteItem(
-                navigationSuiteType = layoutType,
+                navigationSuiteType = itemLayoutType,
                 selected = currentDestination?.hasRoute<Route.Menu>() == true,
-                onClick = openMenu,
+                onClick = { navigateFromNavigation(openMenu) },
                 icon = { Icon(EditIcon, null) },
                 label = { Text(stringResource(R.string.menu_manage)) },
             )
             NavigationSuiteItem(
-                navigationSuiteType = layoutType,
+                navigationSuiteType = itemLayoutType,
                 selected = currentDestination?.hasRoute<Route.About>() == true,
-                onClick = openAbout,
+                onClick = { navigateFromNavigation(openAbout) },
                 icon = { Icon(InfoIcon, null) },
                 label = { Text(stringResource(R.string.about_title)) },
             )
+        }
+        if (suiteIsRail) {
+            AnimatedRailEntry(visible = railExpanded, content = utilities)
+        } else if (suiteIsDrawer) {
+            utilities()
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         NonBouncyModalNavigationDrawer(
+            enabled = !suiteIsRail,
             drawerState = featureDrawerState,
             gesturesEnabled = !suiteIsDrawer,
             drawerContent = { sheetModifier ->
@@ -730,20 +782,26 @@ fun NotiSyncRoot(
         ) {
         AppNavigationScaffold(
             navigationSuiteType = layoutType,
+            railState = railState,
+            useModalRail = useModalRail,
             railHeader = {
                 if (suiteIsRail) {
-                    IconButton(onClick = { drawerScope.launch { featureDrawerState.open() } }) {
-                        Icon(MenuIcon, stringResource(R.string.open_features))
+                    IconButton(onClick = { drawerScope.launch { railState.toggle() } }) {
+                        Icon(
+                            if (railExpanded) MenuOpenIcon else MenuIcon,
+                            stringResource(if (railExpanded) R.string.close_features else R.string.open_features),
+                        )
                     }
                 }
             },
             navigationItems = {
                 if (suiteIsRail) {
-                    // The scroll wrapper owns item spacing; WideNavigationRail only sees one child.
+                    // Each animated entry owns its spacing, including while it appears/disappears.
                     Column(
                         modifier = Modifier.verticalScroll(rememberScrollState()),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(railItemSpacing),
+                        // Material items own their leading inset; centering them in the expanded
+                        // column moves the icons sideways instead of expanding around that anchor.
+                        horizontalAlignment = Alignment.Start,
                     ) { navigationItems() }
                 } else if (suiteIsDrawer) {
                     Column(Modifier.verticalScroll(rememberScrollState())) { navigationItems() }
@@ -865,6 +923,8 @@ fun NotiSyncRoot(
 @Composable
 private fun AppNavigationScaffold(
     navigationSuiteType: NavigationSuiteType,
+    railState: WideNavigationRailState,
+    useModalRail: Boolean,
     railHeader: @Composable () -> Unit,
     navigationItems: @Composable () -> Unit,
     content: @Composable () -> Unit,
@@ -880,26 +940,39 @@ private fun AppNavigationScaffold(
         return
     }
 
+    // ModalWideNavigationRail remembers its movable content by lambda identity. Keep that
+    // identity stable as the visible destinations change, so item animations are not recreated
+    // while the native rail moves content between its collapsed layout and modal window.
+    val currentNavigationItems by rememberUpdatedState(navigationItems)
+    val railContent: @Composable () -> Unit = remember { { currentNavigationItems() } }
+
     Surface {
         NavigationSuiteScaffoldLayout(
             navigationSuiteType = navigationSuiteType,
             navigationSuite = {
-                WideNavigationRail(
-                    state = rememberWideNavigationRailState(
-                        initialValue = if (navigationSuiteType == NavigationSuiteType.WideNavigationRailExpanded)
-                            WideNavigationRailValue.Expanded else WideNavigationRailValue.Collapsed,
-                    ),
-                    // The default rail padding positions a FAB below the app bar. Our menu
-                    // button instead shares the app bar's 64 dp row and the rail items' center.
-                    contentPadding = PaddingValues(top = 8.dp),
-                    arrangement = Arrangement.Center,
-                    header = {
-                        Box(Modifier.width(96.dp), contentAlignment = Alignment.Center) {
-                            railHeader()
-                        }
-                    },
-                    content = navigationItems,
-                )
+                val header: @Composable () -> Unit = {
+                    Box(Modifier.width(96.dp), contentAlignment = Alignment.Center) {
+                        railHeader()
+                    }
+                }
+                // Align the menu with the app bar's 64 dp row and center the destinations.
+                if (useModalRail) {
+                    ModalWideNavigationRail(
+                        state = railState,
+                        contentPadding = PaddingValues(top = 8.dp),
+                        arrangement = Arrangement.Center,
+                        header = header,
+                        content = railContent,
+                    )
+                } else {
+                    WideNavigationRail(
+                        state = railState,
+                        contentPadding = PaddingValues(top = 8.dp),
+                        arrangement = Arrangement.Center,
+                        header = header,
+                        content = railContent,
+                    )
+                }
             },
         ) {
             Box(Modifier.consumeWindowInsets(WideNavigationRailDefaults.windowInsets.only(WindowInsetsSides.Start))) {
@@ -911,11 +984,16 @@ private fun AppNavigationScaffold(
 
 @Composable
 private fun NonBouncyModalNavigationDrawer(
+    enabled: Boolean,
     drawerState: DrawerState,
     gesturesEnabled: Boolean,
     drawerContent: @Composable (Modifier) -> Unit,
     content: @Composable () -> Unit,
 ) {
+    if (!enabled) {
+        content()
+        return
+    }
     val appMotionScheme = MaterialTheme.motionScheme
     val drawerMotionScheme = remember(appMotionScheme) {
         NonBouncyDrawerMotionScheme(appMotionScheme)

@@ -7,6 +7,20 @@ import org.junit.Test
 
 class MenuConfigurationTest {
     @Test
+    fun expandedNavigationShowsHiddenPagesInOrderWithoutChangingCollapsedSelection() {
+        val order = listOf("ssh_keys", "run", "seal", "apps", "iphone", "activity", "settings", "devices")
+        val selected = setOf("apps", "devices")
+        val configuration = MenuConfiguration(order = order, navigation = selected)
+
+        assertEquals(listOf("apps", "devices"), configuration.navigationDestinations(7).map { it.id })
+        assertEquals(order, configuration.navigationDestinations(7, showAll = true).map { it.id })
+        assertEquals(order, configuration.navigationDestinations(5, showAll = true).map { it.id })
+        assertEquals(listOf("apps", "devices"), configuration.navigationDestinations(5).map { it.id })
+        assertEquals(selected, configuration.navigation)
+        assertEquals(order.filterNot { it in selected }, configuration.overflowDestinations(7).map { it.id })
+    }
+
+    @Test
     fun resizingMovesOverflowIntoMenuWithoutDuplicatesOrLostSelections() {
         val order = listOf("run", "seal", "ssh_keys", "apps", "iphone", "activity", "settings", "devices")
         val configuration = MenuConfiguration(order = order, navigation = order.toSet())

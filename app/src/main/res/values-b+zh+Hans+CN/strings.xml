@@ -21,6 +21,7 @@
     <string name="menu_reset">重置</string>
     <string name="menu_save_failed">无法保存菜单更改。</string>
     <string name="open_features">打开菜单</string>
+    <string name="close_features">关闭菜单</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
