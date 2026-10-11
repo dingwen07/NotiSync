@@ -217,8 +217,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
-                    shouldShowCustomStartupScreen(startupState) ->
-                        StartupScreen(stage = startupState.stage)
+                    startupState.stage == AppStartupStage.FAILED -> StartupFailureScreen()
                     // Kept behind the system splash during ordinary checking and graph initialization.
                     else -> Box(modifier = Modifier.fillMaxSize())
                 }

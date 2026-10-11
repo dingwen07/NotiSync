@@ -61,8 +61,8 @@ import net.extrawdw.apps.notisync.data.NotificationForwardingStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
-import net.extrawdw.apps.notisync.data.storage.migration.RoomStorageMigration
-import net.extrawdw.apps.notisync.data.storage.migration.notiSyncDataStore
+import net.extrawdw.apps.notisync.data.notiSyncDataStore
+import net.extrawdw.apps.notisync.data.storage.initializeRoomStorage
 import net.extrawdw.apps.notisync.data.storage.operational.RoomOperationalApplicationState
 import net.extrawdw.apps.notisync.ios.IosBridgeManager
 import net.extrawdw.apps.notisync.ios.IosBridgeService
@@ -1720,7 +1720,6 @@ class AppGraph(private val app: Application) {
 
 internal enum class AppStartupStage {
     CHECKING_STORAGE,
-    IMPORTING_DATABASE,
     INITIALIZING_APPLICATION,
     READY,
     FAILED,
@@ -1728,7 +1727,6 @@ internal enum class AppStartupStage {
 
 internal data class AppStartupState(
     val stage: AppStartupStage = AppStartupStage.CHECKING_STORAGE,
-    val databaseImportRequired: Boolean = false,
 )
 
 /** Application entry point: prepares storage and builds the dependency graph. */
@@ -1756,12 +1754,7 @@ class NotiSyncApp : Application() {
         PairingNfcController.restoreBackgroundRouting(this)
         initScope.launch {
             runCatching {
-                RoomStorageMigration(this@NotiSyncApp).prepare {
-                    _startupState.value = AppStartupState(
-                        stage = AppStartupStage.IMPORTING_DATABASE,
-                        databaseImportRequired = true,
-                    )
-                }
+                initializeRoomStorage(this@NotiSyncApp)
                 _startupState.value = _startupState.value.copy(
                     stage = AppStartupStage.INITIALIZING_APPLICATION,
                 )

@@ -2,9 +2,6 @@
     <!-- Non-translatable strings are inherited from the default resources. -->
 
     <!-- 啟動 -->
-    <string name="startup_checking_storage">正在檢查應用程式資料…</string>
-    <string name="startup_importing_database">正在匯入現有資料…</string>
-    <string name="startup_initializing_application">正在啟動 NotiSync…</string>
     <string name="startup_failed">NotiSync 無法啟動。請關閉並重新開啟應用程式後再試一次。</string>
 
     <!-- Navigation tabs / screen titles -->

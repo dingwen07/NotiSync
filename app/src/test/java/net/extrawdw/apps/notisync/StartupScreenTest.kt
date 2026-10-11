@@ -12,22 +12,6 @@ class StartupScreenTest {
 
         assertTrue(shouldKeepSystemSplash(checking))
         assertTrue(shouldKeepSystemSplash(initializing))
-        assertFalse(shouldShowCustomStartupScreen(checking))
-        assertFalse(shouldShowCustomStartupScreen(initializing))
-    }
-
-    @Test
-    fun databaseImportReleasesSystemSplashAndKeepsCustomStatusThroughInitialization() {
-        val importing = AppStartupState(
-            stage = AppStartupStage.IMPORTING_DATABASE,
-            databaseImportRequired = true,
-        )
-        val initializing = importing.copy(stage = AppStartupStage.INITIALIZING_APPLICATION)
-
-        assertFalse(shouldKeepSystemSplash(importing))
-        assertFalse(shouldKeepSystemSplash(initializing))
-        assertTrue(shouldShowCustomStartupScreen(importing))
-        assertTrue(shouldShowCustomStartupScreen(initializing))
     }
 
     @Test
@@ -37,7 +21,5 @@ class StartupScreenTest {
 
         assertFalse(shouldKeepSystemSplash(ready))
         assertFalse(shouldKeepSystemSplash(failed))
-        assertFalse(shouldShowCustomStartupScreen(ready))
-        assertTrue(shouldShowCustomStartupScreen(failed))
     }
 }

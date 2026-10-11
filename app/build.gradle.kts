@@ -125,7 +125,7 @@ dependencies {
         }
     }
 
-    // Persistence. The first legacy cutover is application-managed; subsequent schema upgrades use Room.
+    // Persistence. Room owns database creation and schema upgrades.
     implementation(libs.androidx.room3.runtime)
     implementation(libs.androidx.paging.compose)
     implementation(libs.androidx.sqlite.framework)

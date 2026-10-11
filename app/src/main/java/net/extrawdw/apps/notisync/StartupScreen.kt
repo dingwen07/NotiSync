@@ -1,9 +1,7 @@
 package net.extrawdw.apps.notisync
 
-import androidx.annotation.StringRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -14,7 +12,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,17 +26,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
-internal fun shouldShowCustomStartupScreen(startupState: AppStartupState): Boolean =
-    startupState.databaseImportRequired ||
-        startupState.stage == AppStartupStage.IMPORTING_DATABASE ||
-        startupState.stage == AppStartupStage.FAILED
-
 internal fun shouldKeepSystemSplash(startupState: AppStartupState): Boolean =
-    startupState.stage != AppStartupStage.READY && !shouldShowCustomStartupScreen(startupState)
+    startupState.stage != AppStartupStage.READY && startupState.stage != AppStartupStage.FAILED
 
 @Composable
-internal fun StartupScreen(
-    stage: AppStartupStage,
+internal fun StartupFailureScreen(
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -49,7 +40,7 @@ internal fun StartupScreen(
             .windowInsetsPadding(WindowInsets.safeDrawing),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Give the logo a stable top-half region so the progress area can appear without moving it.
+        // Keep the logo in the top half and the startup failure message below it.
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
@@ -72,48 +63,22 @@ internal fun StartupScreen(
                 .weight(1f),
             contentAlignment = Alignment.Center,
         ) {
-            when {
-                stage == AppStartupStage.FAILED -> StartupStatusText(stage.statusTextResource())
-                else -> Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(40.dp))
-                    StartupStatusText(stage.statusTextResource())
-                }
-            }
+            Text(
+                text = stringResource(R.string.startup_failed),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(0.8f),
+            )
         }
     }
-}
-
-@Composable
-private fun StartupStatusText(@StringRes statusResource: Int) {
-    Text(
-        text = stringResource(statusResource),
-        style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth(0.8f),
-    )
-}
-
-@StringRes
-private fun AppStartupStage.statusTextResource(): Int = when (this) {
-    AppStartupStage.CHECKING_STORAGE -> R.string.startup_checking_storage
-    AppStartupStage.IMPORTING_DATABASE -> R.string.startup_importing_database
-    AppStartupStage.INITIALIZING_APPLICATION,
-    AppStartupStage.READY,
-    -> R.string.startup_initializing_application
-    AppStartupStage.FAILED -> R.string.startup_failed
 }
 
 @Preview(name = "Phone", device = Devices.PHONE, showBackground = true)
 @Preview(name = "Tablet", device = Devices.TABLET, showBackground = true)
 @Composable
-private fun StartupScreenPreview() {
+private fun StartupFailureScreenPreview() {
     NotiSyncTheme {
-        StartupScreen(
-            stage = AppStartupStage.IMPORTING_DATABASE,
-        )
+        StartupFailureScreen()
     }
 }
