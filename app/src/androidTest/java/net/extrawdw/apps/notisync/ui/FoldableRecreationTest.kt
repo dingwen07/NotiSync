@@ -18,9 +18,17 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.lifecycle.ViewModelProvider
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.pairing.PairingCandidate
+import net.extrawdw.apps.notisync.pairing.PairingReview
+import net.extrawdw.apps.notisync.pairing.PairingReviewSource
+import net.extrawdw.apps.notisync.pairing.PairingViewModel
+import net.extrawdw.notisync.peer.pairing.KeyEpochStatus
+import net.extrawdw.notisync.protocol.ClientId
+import org.junit.Assert.assertSame
 import org.junit.Rule
 import org.junit.Before
 import org.junit.After
@@ -84,6 +92,41 @@ class FoldableRecreationTest {
             }
         } finally {
             selection.setEnabled("com.android.chrome", wasEnabled)
+        }
+    }
+
+    @Test
+    fun pendingPairingReviewRetainsActivityScopeAcrossRecreation() {
+        val candidate = PairingCandidate(
+            payload = "synthetic-unapproved-card",
+            displayName = "Navigation test peer",
+            platform = "android",
+            clientId = ClientId("navigation-test-peer"),
+            safetyNumber = "123456",
+            identityKeyFingerprint = "synthetic-identity",
+            epoch = 1,
+            operationalKeyFingerprint = "",
+            hpkeKeyFingerprint = "",
+            keyEpochStatus = KeyEpochStatus.ABSENT,
+        )
+        val review = PairingReview(candidate, PairingReviewSource.INTERACTIVE, null)
+        lateinit var originalModel: PairingViewModel
+        compose.runOnIdle {
+            originalModel = ViewModelProvider(compose.activity)[PairingViewModel::class.java]
+            originalModel.review.value = review
+        }
+        try {
+            compose.waitUntil(5_000) { compose.onNodeWithText(candidate.displayName).isDisplayed() }
+            compose.activityRule.scenario.recreate()
+            compose.waitUntil(10_000) { compose.onNodeWithText(candidate.displayName).isDisplayed() }
+            compose.runOnIdle {
+                val restored = ViewModelProvider(compose.activity)[PairingViewModel::class.java]
+                assertSame(originalModel, restored)
+                assertSame(review, restored.review.value)
+            }
+        } finally {
+            // The test never approves the synthetic card or writes trust state.
+            compose.runOnIdle { originalModel.review.value = null }
         }
     }
 

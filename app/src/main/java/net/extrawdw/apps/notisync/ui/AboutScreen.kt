@@ -46,7 +46,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.feedback as Feedbac
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.privacy_tip as PrivacyPolicyIcon
 
 @Composable
-internal fun AboutScreen(onBack: () -> Unit) {
+internal fun AboutScreen(onBack: (() -> Unit)?) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val uriHandler = LocalUriHandler.current
@@ -67,8 +67,10 @@ internal fun AboutScreen(onBack: () -> Unit) {
             TopAppBar(
                 title = { Text(stringResource(R.string.about_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(ArrowBackIcon, contentDescription = stringResource(R.string.action_back))
+                    onBack?.let { back ->
+                        IconButton(onClick = back) {
+                            Icon(ArrowBackIcon, contentDescription = stringResource(R.string.action_back))
+                        }
                     }
                 },
             )

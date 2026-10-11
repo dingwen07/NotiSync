@@ -3,7 +3,6 @@ package net.extrawdw.apps.notisync.ui
 import android.widget.Toast
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.FlowRow
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -58,7 +56,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as Arrow
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.drag_handle as DragHandleIcon
 
 @Composable
-internal fun MenuManagementScreen(navigationLimit: Int, onBack: () -> Unit) {
+internal fun MenuManagementScreen(navigationLimit: Int, onBack: (() -> Unit)?) {
     val graph = rememberGraph()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
@@ -105,8 +103,10 @@ internal fun MenuManagementScreen(navigationLimit: Int, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text(stringResource(R.string.menu_manage)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(ArrowBackIcon, stringResource(R.string.action_back))
+                    onBack?.let { back ->
+                        IconButton(onClick = back) {
+                            Icon(ArrowBackIcon, stringResource(R.string.action_back))
+                        }
                     }
                 },
                 actions = {
@@ -120,10 +120,10 @@ internal fun MenuManagementScreen(navigationLimit: Int, onBack: () -> Unit) {
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
+        TabContent {
             LazyColumn(
                 state = list,
-                modifier = Modifier.widthIn(max = 840.dp).fillMaxWidth(),
+                modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
                 contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
