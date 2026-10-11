@@ -153,7 +153,8 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
     NotiScaffold(stringResource(R.string.tab_settings)) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
-            contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),
+            // Keep horizontal spacing inside each row so its ripple covers the side gutters.
+            contentPadding = padding.withContentSpacing(top = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             item { SettingsSectionHeader(R.string.settings_section_connection, topPadding = 0.dp) }
@@ -166,7 +167,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                         autoCorrectEnabled = false,
                         imeAction = ImeAction.Next,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 )
             }
             item {
@@ -179,7 +180,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                         keyboardType = KeyboardType.Uri,
                         imeAction = ImeAction.Done,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 )
             }
             item { SettingsSectionHeader(R.string.settings_section_notifications) }
@@ -258,7 +259,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
             }
             item {
                 ListItem(
-                    contentPadding = PaddingValues(vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     verticalAlignment = Alignment.CenterVertically,
                     supportingContent = { Text(stringResource(R.string.desktop_applications_summary)) },
@@ -273,7 +274,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
             item {
                 ListItem(
                     modifier = Modifier.clickable(onClick = onOpenAbout),
-                    contentPadding = PaddingValues(vertical = 8.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
                 ) { Text(stringResource(R.string.about_title)) }
@@ -349,6 +350,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                                 graph.trust.simulateSignatureTamper()
                             }
                         },
+                        modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
             }
@@ -477,7 +479,8 @@ private fun FullScreenIntentBlockedRow() {
                         )
                     )
                 }
-            },
+            }
+            .padding(horizontal = 16.dp),
     ) {
         Text(
             stringResource(R.string.settings_call_ringer_fsi_blocked),
@@ -498,7 +501,7 @@ private fun SettingsSectionHeader(@StringRes title: Int, topPadding: Dp = 8.dp) 
         stringResource(title),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = topPadding),
+            .padding(start = 16.dp, top = topPadding, end = 16.dp),
         style = MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.primary,
     )
@@ -510,7 +513,7 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
         Modifier
             .fillMaxWidth()
             .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
-            .padding(vertical = 2.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
             .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -540,35 +543,20 @@ private fun ScreenMirrorSettingsRow(
     onOpenShizuku: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .toggleable(value = enabled, role = Role.Switch, onValueChange = onChange)
-                .padding(vertical = 4.dp)
-                .heightIn(min = 48.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                stringResource(R.string.screen_mirror_settings_title),
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 16.dp),
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            Switch(
-                checked = enabled,
-                onCheckedChange = onChange,
-                modifier = Modifier.padding(start = 4.dp),
-            )
-        }
+        ToggleRow(
+            label = stringResource(R.string.screen_mirror_settings_title),
+            checked = enabled,
+            onChange = onChange,
+        )
         Text(
             stringResource(R.string.screen_mirror_settings_body),
+            modifier = Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
             stringResource(screenStatusText(status, codecBits, probeBits)),
+            modifier = Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall,
             color = if (screenSetupReady(status, codecBits, probeBits)) {
                 MaterialTheme.colorScheme.primary
@@ -582,7 +570,7 @@ private fun ScreenMirrorSettingsRow(
         ) {
             Text(
                 stringResource(R.string.screen_mirror_open_shizuku),
-                modifier = Modifier.clickable(onClick = onOpenShizuku),
+                modifier = Modifier.padding(horizontal = 16.dp).clickable(onClick = onOpenShizuku),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )

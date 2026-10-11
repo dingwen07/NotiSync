@@ -35,10 +35,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.view_cozy as AppsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications as NotificationsIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications_active as NotificationsActiveIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.wifi_notification as WifiNotificationIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
 import androidx.compose.material3.Button
@@ -334,7 +334,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.LISTENER -> StepPage(
-                        icon = NotificationsActiveIcon,
+                        icon = WifiNotificationIcon,
                         title = stringResource(R.string.onboarding_listener_title),
                         body = stringResource(R.string.onboarding_listener_body),
                         status = if (listenerEnabled) stringResource(R.string.onboarding_listener_granted) else null,

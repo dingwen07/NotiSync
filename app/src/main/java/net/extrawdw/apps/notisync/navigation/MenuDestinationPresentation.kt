@@ -5,13 +5,13 @@ import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.vector.ImageVector
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.SignatureIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.browse_activity as ActivityIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.mobile_3 as Mobile3Icon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.view_cozy as AppsIcon
 
 @get:StringRes
 internal val MenuDestination.label: Int get() = when (this) {
@@ -28,12 +28,23 @@ internal val MenuDestination.label: Int get() = when (this) {
 internal val MenuDestination.icon: ImageVector get() = when (this) {
     MenuDestination.DEVICES -> DevicesIcon
     MenuDestination.APPS -> AppsIcon
-    MenuDestination.IPHONE -> PhoneIphoneIcon
-    MenuDestination.ACTIVITY -> HistoryIcon
+    MenuDestination.IPHONE -> Mobile3Icon
+    MenuDestination.ACTIVITY -> ActivityIcon
     MenuDestination.SETTINGS -> SettingsIcon
     MenuDestination.RUN -> TerminalIcon
     MenuDestination.SEAL -> SignatureIcon
     MenuDestination.SSH_KEYS -> KeyIcon
+}
+
+/** Settings only rotates; Run, Seal and SSH keep their static symbols. */
+@get:DrawableRes
+internal val MenuDestination.selectionAnimation: Int? get() = when (this) {
+    MenuDestination.DEVICES -> R.drawable.avd_nav_devices
+    MenuDestination.APPS -> R.drawable.avd_nav_view_cozy
+    MenuDestination.IPHONE -> R.drawable.avd_nav_mobile_3
+    MenuDestination.ACTIVITY -> R.drawable.avd_nav_browse_activity
+    MenuDestination.SETTINGS, MenuDestination.RUN,
+    MenuDestination.SEAL, MenuDestination.SSH_KEYS -> null
 }
 
 @DrawableRes

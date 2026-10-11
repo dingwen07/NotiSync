@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared by FILL path morphs and rotations, in both selection directions. -->
+    <integer name="navigation_icon_selection_duration_ms">240</integer>
+</resources>

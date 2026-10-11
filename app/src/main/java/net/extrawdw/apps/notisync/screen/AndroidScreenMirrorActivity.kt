@@ -69,7 +69,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as LauncherIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.drag_handle as DragHandleIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.home as HomeIcon
@@ -80,6 +80,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.power_settings_new 
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.vertical_align_bottom as VerticalAlignBottomIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.vertical_align_top as VerticalAlignTopIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.view_carousel as RecentsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility as VisibilityIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility_off as VisibilityOffIcon
 import androidx.compose.material3.AlertDialog
@@ -1292,8 +1293,8 @@ private fun ScreenViewerControlDialog(
 private fun ScreenViewerControl.icon(): androidx.compose.ui.graphics.vector.ImageVector = when (this) {
     ScreenViewerControl.BACK -> ArrowBackIcon
     ScreenViewerControl.HOME -> HomeIcon
-    ScreenViewerControl.RECENTS -> net.extrawdw.apps.notisync.ui.icons.material.outlined.grid_view
-    ScreenViewerControl.LAUNCHER -> AppsIcon
+    ScreenViewerControl.RECENTS -> RecentsIcon
+    ScreenViewerControl.LAUNCHER -> LauncherIcon
     ScreenViewerControl.KEYBOARD -> KeyboardIcon
     ScreenViewerControl.POWER -> PowerSettingsNewIcon
     ScreenViewerControl.NOTIFICATION_PANEL -> NotificationsIcon

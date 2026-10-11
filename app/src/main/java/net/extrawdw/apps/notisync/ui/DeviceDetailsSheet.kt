@@ -242,6 +242,7 @@ internal fun DeviceDetailsSheet(
                                     )
                                     if (!virtualDisplayAvailable) Text(
                                         stringResource(R.string.screen_virtual_unavailable),
+                                        modifier = Modifier.padding(horizontal = 16.dp),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -285,7 +286,7 @@ internal fun DeviceDetailsSheet(
                                     onCheckedChange = onForwardIphoneNotificationsChange,
                                 )
                                 HorizontalDivider()
-                                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                     Text(stringResource(R.string.device_filters_label), Modifier.weight(1f),
                                         style = MaterialTheme.typography.bodyLarge)
@@ -384,13 +385,14 @@ private fun NotificationForwardingSwitch(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
             .toggleable(
                 value = checked,
                 enabled = enabled,
                 role = Role.Switch,
                 onValueChange = onCheckedChange,
-            ),
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -490,7 +492,7 @@ private fun ScreenMirrorCodecSelector(
         ScreenMirrorCodec.H265 to stringResource(R.string.screen_mirror_codec_h265),
         ScreenMirrorCodec.H264 to stringResource(R.string.screen_mirror_codec_h264),
     )
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             stringResource(R.string.screen_mirror_codec_title),
             style = MaterialTheme.typography.labelLarge,
@@ -530,13 +532,14 @@ private fun ScreenControlAuthorization(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
                 .toggleable(
                     value = authorized,
                     enabled = enabled,
                     role = Role.Switch,
                     onValueChange = onAuthorizedChange,
-                ),
+                )
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .heightIn(min = 48.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -553,12 +556,14 @@ private fun ScreenControlAuthorization(
         }
         Text(
             stringResource(body),
+            modifier = Modifier.padding(horizontal = 16.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         additionalBody?.let {
             Text(
                 stringResource(it),
+                modifier = Modifier.padding(horizontal = 16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -566,6 +571,7 @@ private fun ScreenControlAuthorization(
         if (!masterEnabled) {
             Text(
                 stringResource(R.string.screen_mirror_device_master_off),
+                modifier = Modifier.padding(horizontal = 16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

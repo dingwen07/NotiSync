@@ -82,12 +82,13 @@ internal fun AppConfigSheet(
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                // Padding belongs inside the scroll viewport so rows can draw behind navigation.
-                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp + bottomInset),
+                // Inset row content individually so the ripple also covers the side gutters.
+                .padding(bottom = 32.dp + bottomInset),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (!LocalIsDetailPane.current) {
-                Text(app.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(app.label, modifier = Modifier.padding(horizontal = 20.dp),
+                    style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
 
             // --- Incoming: how a call RECEIVED from this app is alerted on THIS device. Kept at the top and
@@ -99,7 +100,7 @@ internal fun AppConfigSheet(
                 onCheckedChange = { appConfig.setRingForCalls(app.packageName, it) },
             )
 
-            HorizontalDivider()
+            HorizontalDivider(Modifier.padding(horizontal = 20.dp))
 
             // --- Outgoing capture: ongoing notifications this device mirrors OUT to your other devices ---
             SettingSwitchRow(
@@ -127,18 +128,21 @@ internal fun AppConfigSheet(
                 onCheckedChange = { appConfig.setMirrorMediaPlaybackToIos(app.packageName, it) },
             )
 
-            HorizontalDivider()
+            HorizontalDivider(Modifier.padding(horizontal = 20.dp))
 
             // --- Notification channels ---
-            Text(stringResource(R.string.app_config_channels_title), style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.app_config_channels_title), modifier = Modifier.padding(horizontal = 20.dp),
+                style = MaterialTheme.typography.titleSmall)
             Text(
                 stringResource(R.string.app_config_channels_desc),
+                modifier = Modifier.padding(horizontal = 20.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (channels.isEmpty()) {
                 Text(
                     stringResource(R.string.app_config_channels_empty),
+                    modifier = Modifier.padding(horizontal = 20.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -163,7 +167,7 @@ private fun UpdateFrequencySlider(current: Int, onChange: (Int) -> Unit) {
         trackRange = 0f..UPDATE_STOPS.lastIndex.toFloat(),
     )
     sliderState.value = index.toFloat()
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 stringResource(R.string.app_config_update_title),
@@ -214,10 +218,11 @@ private fun ChannelGroup(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 48.dp)
                     .toggleable(value = !groupDisabled, role = Role.Switch) {
                         appConfig.setGroupEnabled(packageName, groupId, it)
-                    },
+                    }
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -236,6 +241,7 @@ private fun ChannelGroup(
         } else {
             Text(
                 groupLabel,
+                modifier = Modifier.padding(horizontal = 20.dp),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -263,10 +269,11 @@ private fun ChannelRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
             .toggleable(value = on, enabled = enabled, role = Role.Switch) {
                 appConfig.setChannelEnabled(packageName, channel.channelId, it)
-            },
+            }
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .heightIn(min = 48.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -311,8 +318,9 @@ private fun SettingSwitchRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

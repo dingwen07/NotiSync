@@ -77,7 +77,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -136,8 +135,10 @@ import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
 import net.extrawdw.apps.notisync.navigation.AppNavigationTransitions
 import net.extrawdw.apps.notisync.navigation.AnimatedRailEntry
 import net.extrawdw.apps.notisync.navigation.MenuDestination
+import net.extrawdw.apps.notisync.navigation.NavigationSelectionIcon
 import net.extrawdw.apps.notisync.navigation.icon
 import net.extrawdw.apps.notisync.navigation.label
+import net.extrawdw.apps.notisync.navigation.selectionAnimation
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu as MenuIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu_open as MenuOpenIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
@@ -345,7 +346,6 @@ private enum class AppDestination(val menu: MenuDestination, val route: Route) {
     SSH_AGENT(MenuDestination.SSH_KEYS, Route.SshAgent);
 
     @get:StringRes val label: Int get() = menu.label
-    val icon: ImageVector get() = menu.icon
 
     companion object {
         fun fromMenu(menu: MenuDestination): AppDestination = entries.first { it.menu == menu }
@@ -394,7 +394,7 @@ private class PairingUiState : androidx.lifecycle.ViewModel() {
     }
 }
 
-// Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
+// Every tab glyph is centered in a 24dp box, but mobile_3 fills 22/24 of its viewBox (vs 16–20
 // for the others), so its taller silhouette reads as raised. Render just the iOS glyph slightly
 // smaller, inside the same 24dp box, so its visual height matches the rest of the set.
 private val TopLevelNavIconSize = 24.dp
@@ -671,12 +671,13 @@ fun NotiSyncRoot(
     val navigationItems: @Composable () -> Unit = {
         navigationDestinations.forEach { dest ->
             key(dest) {
+                val selected = currentDestination.isOn(dest)
                 val item: @Composable () -> Unit = {
                     NavigationSuiteItem(
                         navigationSuiteType = itemLayoutType,
-                        selected = currentDestination.isOn(dest),
+                        selected = selected,
                         onClick = { navigateFromNavigation { navController.navigateToTopLevel(dest) } },
-                        icon = { TopLevelNavIcon(dest) },
+                        icon = { TopLevelNavIcon(dest, selected) },
                         label = { TopLevelNavLabel(dest) },
                     )
                 }
@@ -696,14 +697,24 @@ fun NotiSyncRoot(
                 navigationSuiteType = itemLayoutType,
                 selected = currentDestination?.hasRoute<Route.Menu>() == true,
                 onClick = { navigateFromNavigation(openMenu) },
-                icon = { Icon(EditIcon, null) },
+                icon = {
+                    NavigationSelectionIcon(
+                        EditIcon, R.drawable.avd_nav_edit,
+                        currentDestination?.hasRoute<Route.Menu>() == true, null,
+                    )
+                },
                 label = { Text(stringResource(R.string.menu_manage)) },
             )
             NavigationSuiteItem(
                 navigationSuiteType = itemLayoutType,
                 selected = currentDestination?.hasRoute<Route.About>() == true,
                 onClick = { navigateFromNavigation(openAbout) },
-                icon = { Icon(InfoIcon, null) },
+                icon = {
+                    NavigationSelectionIcon(
+                        InfoIcon, R.drawable.avd_nav_info,
+                        currentDestination?.hasRoute<Route.About>() == true, null,
+                    )
+                },
                 label = { Text(stringResource(R.string.about_title)) },
             )
         }
@@ -741,9 +752,10 @@ fun NotiSyncRoot(
                         // Hide only pages actually visible in navigation. Selections beyond its adaptive
                         // limit remain reachable here when the window becomes smaller.
                         overflowDestinations.forEach { dest ->
+                            val selected = pendingFeatureDestination?.let { it == dest }
+                                ?: currentDestination.isOn(dest)
                             NavigationDrawerItem(
-                                selected = pendingFeatureDestination?.let { it == dest }
-                                    ?: currentDestination.isOn(dest),
+                                selected = selected,
                                 onClick = {
                                     if (pendingFeatureDestination == null) {
                                         pendingFeatureDestination = dest
@@ -757,7 +769,7 @@ fun NotiSyncRoot(
                                         }
                                     }
                                 },
-                                icon = { TopLevelNavIcon(dest) },
+                                icon = { TopLevelNavIcon(dest, selected) },
                                 label = { TopLevelNavLabel(dest) },
                                 modifier = Modifier.padding(horizontal = 12.dp),
                             )
@@ -767,7 +779,12 @@ fun NotiSyncRoot(
                     NavigationDrawerItem(
                         selected = currentDestination?.hasRoute<Route.About>() == true,
                         onClick = { drawerScope.launch { featureDrawerState.close(); openAbout() } },
-                        icon = { Icon(InfoIcon, null) },
+                        icon = {
+                            NavigationSelectionIcon(
+                                InfoIcon, R.drawable.avd_nav_info,
+                                currentDestination?.hasRoute<Route.About>() == true, null,
+                            )
+                        },
                         label = { Text(stringResource(R.string.about_title)) },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     )
@@ -1055,14 +1072,20 @@ internal fun pairingOverlayAfterRunOpenRequest(currentlyVisible: Boolean, openRu
     currentlyVisible && openRun == null
 
 @Composable
-private fun TopLevelNavIcon(dest: AppDestination) {
+private fun TopLevelNavIcon(dest: AppDestination, selected: Boolean) {
     val glyphSize =
         if (dest == AppDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
     Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
-        Icon(
-            imageVector = dest.icon,
+        NavigationSelectionIcon(
+            icon = dest.menu.icon,
+            animation = dest.menu.selectionAnimation,
+            selected = selected,
             contentDescription = stringResource(dest.label),
             modifier = Modifier.size(glyphSize),
+            rotationWhenSelected = when (dest) {
+                AppDestination.SETTINGS -> 60f
+                else -> 0f
+            },
         )
     }
 }
