@@ -134,6 +134,7 @@ import net.extrawdw.apps.notisync.ui.MenuManagementScreen
 import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
 import net.extrawdw.apps.notisync.navigation.AppNavigationTransitions
 import net.extrawdw.apps.notisync.navigation.AnimatedRailEntry
+import net.extrawdw.apps.notisync.navigation.NavigationRailContent
 import net.extrawdw.apps.notisync.navigation.MenuDestination
 import net.extrawdw.apps.notisync.navigation.NavigationSelectionIcon
 import net.extrawdw.apps.notisync.navigation.icon
@@ -626,10 +627,11 @@ fun NotiSyncRoot(
     val collapsedDestinations = menuConfiguration.navigationDestinations(navigationLimit)
         .map(AppDestination::fromMenu)
     // Keep every rail entry at a stable composition position; visibility animates per entry.
-    val navigationDestinations = menuConfiguration.navigationDestinations(
-        limit = navigationLimit,
-        showAll = suiteIsDrawer || suiteIsRail,
-    ).map(AppDestination::fromMenu)
+    val navigationDestinations = if (suiteIsRail) {
+        menuConfiguration.expandedRailDestinations(navigationLimit)
+    } else {
+        menuConfiguration.navigationDestinations(navigationLimit, showAll = suiteIsDrawer)
+    }.map(AppDestination::fromMenu)
     val overflowDestinations = menuConfiguration.overflowDestinations(navigationLimit).map(AppDestination::fromMenu)
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
@@ -811,15 +813,7 @@ fun NotiSyncRoot(
                 }
             },
             navigationItems = {
-                if (suiteIsRail) {
-                    // Each animated entry owns its spacing, including while it appears/disappears.
-                    Column(
-                        modifier = Modifier.verticalScroll(rememberScrollState()),
-                        // Material items own their leading inset; centering them in the expanded
-                        // column moves the icons sideways instead of expanding around that anchor.
-                        horizontalAlignment = Alignment.Start,
-                    ) { navigationItems() }
-                } else if (suiteIsDrawer) {
+                if (suiteIsDrawer) {
                     Column(Modifier.verticalScroll(rememberScrollState())) { navigationItems() }
                 } else navigationItems()
             },
@@ -960,32 +954,34 @@ private fun AppNavigationScaffold(
     // identity stable as the visible destinations change, so item animations are not recreated
     // while the native rail moves content between its collapsed layout and modal window.
     val currentNavigationItems by rememberUpdatedState(navigationItems)
-    val railContent: @Composable () -> Unit = remember { { currentNavigationItems() } }
+    val currentRailHeader by rememberUpdatedState(railHeader)
+    val railContent: @Composable () -> Unit = remember {
+        {
+            NavigationRailContent(
+                header = { currentRailHeader() },
+                content = { currentNavigationItems() },
+            )
+        }
+    }
 
     Surface {
         NavigationSuiteScaffoldLayout(
             navigationSuiteType = navigationSuiteType,
             navigationSuite = {
-                val header: @Composable () -> Unit = {
-                    Box(Modifier.width(96.dp), contentAlignment = Alignment.Center) {
-                        railHeader()
-                    }
-                }
-                // Align the menu with the app bar's 64 dp row and center the destinations.
+                // Material's Arrangement.Center centers across the header too. Own the header
+                // and remaining viewport together so a tall destination list cannot cover it.
                 if (useModalRail) {
                     ModalWideNavigationRail(
                         state = railState,
                         contentPadding = PaddingValues(top = 8.dp),
-                        arrangement = Arrangement.Center,
-                        header = header,
+                        arrangement = Arrangement.Top,
                         content = railContent,
                     )
                 } else {
                     WideNavigationRail(
                         state = railState,
                         contentPadding = PaddingValues(top = 8.dp),
-                        arrangement = Arrangement.Center,
-                        header = header,
+                        arrangement = Arrangement.Top,
                         content = railContent,
                     )
                 }

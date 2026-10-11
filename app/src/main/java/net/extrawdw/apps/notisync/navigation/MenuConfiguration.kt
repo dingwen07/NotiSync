@@ -39,4 +39,8 @@ data class MenuConfiguration(
         val visible = navigationDestinations(limit).toSet()
         return destinations().filterNot { it in visible }
     }
+
+    /** Keep collapsed entries in place; append hidden and over-limit pages in their saved order. */
+    fun expandedRailDestinations(limit: Int): List<MenuDestination> =
+        navigationDestinations(limit) + overflowDestinations(limit)
 }
