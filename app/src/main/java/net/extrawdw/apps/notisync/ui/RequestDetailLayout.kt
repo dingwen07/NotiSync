@@ -81,7 +81,7 @@ internal fun RequestDetailLayout(
                             end = end,
                         ),
                     ) {
-                        header?.invoke()
+                        header()
                     }
                 }
                 Row(
