@@ -9,9 +9,20 @@ import os
 nonisolated enum AppGroupStore {
     private static let fallbackLock = NSLock()
     private static var cachedLockDirectory: URL?
+    private static let containerURLCache = OSAllocatedUnfairLock<URL?>(initialState: nil)
 
     static var containerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: NotiSyncConfig.appGroup)
+        if let cached = containerURLCache.withLock({ $0 }) { return cached }
+        // Resolve outside the mutex and cache successes only, so a temporary failure can be retried.
+        // lockURL resolves before taking flock; reads inside its body then reuse this URL.
+        guard let resolved = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: NotiSyncConfig.appGroup
+        ) else { return nil }
+        return containerURLCache.withLock { cached in
+            if let cached { return cached }
+            cached = resolved
+            return resolved
+        }
     }
 
     private static func url(_ name: String) -> URL? { containerURL?.appendingPathComponent(name) }
@@ -229,10 +240,9 @@ nonisolated enum NotificationFilterStore {
     private static let fileName = AppGroupStore.Files.notificationFilters
 
     static func preferences() -> NotificationFilterPreferences {
-        AppGroupStore.withLock(fileName) {
-            if let prefs = AppGroupStore.read(NotificationFilterPreferences.self, fileName) { return prefs }
-            return NotificationFilterPreferences()
-        }
+        // Writers atomically replace this file, so readers see a complete old or new snapshot without
+        // holding a file lock during UI rendering. Read-modify-write operations still lock below.
+        AppGroupStore.read(NotificationFilterPreferences.self, fileName) ?? NotificationFilterPreferences()
     }
 
     static func androidLocalNotificationsEnabled(for clientId: String) -> Bool {
