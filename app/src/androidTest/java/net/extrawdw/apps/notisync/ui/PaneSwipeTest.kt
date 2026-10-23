@@ -89,7 +89,7 @@ class PaneSwipeTest {
         swipeBody(-80f, 120)
         val regionWidthDp = regionWidth()
         // Cross the content breakpoint while keeping the divider visibly short of the split.
-        val targetPaneWidth = (regionWidthDp / 2 + if (request) 840f else 704f) / 2
+        val targetPaneWidth = (regionWidthDp / 2 + 704f) / 2
         val distance = (regionWidthDp - targetPaneWidth) * compose.activity.resources.displayMetrics.density
         compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("swipe-region").performTouchInput {

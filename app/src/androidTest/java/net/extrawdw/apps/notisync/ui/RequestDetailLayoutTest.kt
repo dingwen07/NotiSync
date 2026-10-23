@@ -5,6 +5,7 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.PaddingValues
@@ -75,7 +76,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class RequestDetailLayoutTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
-    private val width = mutableStateOf(840.dp)
+    private val width = mutableStateOf(704.dp)
 
     @Before
     fun useLandscapeTestActivity() {
@@ -86,6 +87,49 @@ class RequestDetailLayoutTest {
         }
         compose.waitUntil(5_000) {
             compose.activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        }
+    }
+
+    @Test
+    fun requestAndSettingsColumnsShareBreakpointAfterContentPadding() {
+        width.value = 663.dp
+        val padding = mutableStateOf(PaddingValues(0.dp))
+        compose.setContent {
+            NotiSyncTheme {
+                Column(Modifier.requiredWidth(width.value)) {
+                    RequestDetailLayout(
+                        modifier = Modifier.height(200.dp),
+                        contentPadding = padding.value,
+                        useWideLayout = true,
+                        summary = { Box(Modifier.fillMaxWidth().height(48.dp).testTag("request-summary")) },
+                    ) {
+                        Box(Modifier.fillMaxWidth().height(48.dp).testTag("request-details"))
+                    }
+                    AdaptiveDetailGrid(
+                        modifier = Modifier.height(200.dp),
+                        contentPadding = padding.value,
+                        verticalSpacing = 16.dp,
+                    ) {
+                        detailSection("settings-summary") { Box(Modifier.height(48.dp)) }
+                        detailSection("settings-details") { Box(Modifier.height(48.dp)) }
+                    }
+                }
+            }
+        }
+        for (horizontalPadding in listOf(0.dp, 20.dp)) {
+            compose.runOnIdle {
+                padding.value = PaddingValues(horizontal = horizontalPadding)
+                width.value = 663.dp + horizontalPadding * 2
+            }
+            for (prefix in listOf("request", "settings")) {
+                val first = compose.onNodeWithTag("$prefix-summary").getUnclippedBoundsInRoot()
+                val second = compose.onNodeWithTag("$prefix-details").getUnclippedBoundsInRoot()
+                assertEquals(first.left, second.left)
+                assertTrue(second.top > first.top)
+            }
+            compose.runOnIdle { width.value = 664.dp + horizontalPadding * 2 }
+            assertSideBySide("request-summary", "request-details")
+            assertSideBySide("settings-summary", "settings-details")
         }
     }
 
@@ -113,7 +157,7 @@ class RequestDetailLayoutTest {
         val hero = compose.onNodeWithTag("hero-card")
         fun heroWidth() = hero.getUnclippedBoundsInRoot().let { it.right - it.left }
         val splitWidth = heroWidth()
-        for (paneWidth in listOf(700.dp, 839.dp)) {
+        for (paneWidth in listOf(700.dp, 703.dp)) {
             compose.runOnIdle { width.value = paneWidth }
             assertEquals(splitWidth, heroWidth())
         }
@@ -126,7 +170,7 @@ class RequestDetailLayoutTest {
 
     @Test
     fun cardsAnimateBetweenSingleAndTwoColumns() {
-        width.value = 839.dp
+        width.value = 703.dp
         compose.setContent {
             NotiSyncTheme {
                 Box(Modifier.requiredWidth(width.value).height(500.dp)) {
@@ -144,7 +188,7 @@ class RequestDetailLayoutTest {
         val detail = compose.onNodeWithTag("detail")
         val narrow = detail.getUnclippedBoundsInRoot()
         compose.mainClock.autoAdvance = false
-        compose.runOnUiThread { width.value = 840.dp }
+        compose.runOnUiThread { width.value = 704.dp }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(80)
@@ -157,7 +201,7 @@ class RequestDetailLayoutTest {
         assertTrue(expanding.top < narrow.top && expanding.top > wide.top)
 
         compose.mainClock.autoAdvance = false
-        compose.runOnUiThread { width.value = 839.dp }
+        compose.runOnUiThread { width.value = 703.dp }
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
         compose.mainClock.advanceTimeBy(80)
@@ -193,10 +237,10 @@ class RequestDetailLayoutTest {
         compose.onNodeWithTag("request-note").performScrollTo().performTextInput("retained")
         repeat(5) {
             compose.onNodeWithText("Detail 19").performScrollTo()
-            compose.runOnIdle { width.value = 839.dp }
+            compose.runOnIdle { width.value = 703.dp }
             compose.onNodeWithText("Detail 19").performScrollTo()
             compose.onNodeWithTag("request-note").performScrollTo().assertTextContains("retained")
-            compose.runOnIdle { width.value = 840.dp }
+            compose.runOnIdle { width.value = 704.dp }
             compose.onNodeWithText("Hero").performScrollTo().assertIsDisplayed()
             compose.onNodeWithTag("request-note").performScrollTo().assertTextContains("retained")
         }
@@ -224,14 +268,14 @@ class RequestDetailLayoutTest {
         compose.onNodeWithText("Detail 19").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("hero").assertIsDisplayed()
 
-        compose.runOnIdle { width.value = 839.dp }
+        compose.runOnIdle { width.value = 703.dp }
         compose.onNodeWithTag("draft").performScrollTo().assertTextContains("retained value")
         val hero = compose.onNodeWithTag("hero").fetchSemanticsNode().boundsInRoot
         val detail = compose.onNodeWithTag("draft").fetchSemanticsNode().boundsInRoot
         assertEquals(hero.left, detail.left, 1f)
         assertTrue(detail.top > hero.top)
 
-        compose.runOnIdle { width.value = 840.dp }
+        compose.runOnIdle { width.value = 704.dp }
         compose.onNodeWithTag("draft").performScrollTo().assertTextContains("retained value")
         assertSideBySide("hero", "draft")
     }

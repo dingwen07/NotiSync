@@ -35,15 +35,12 @@ internal fun AdaptiveDetailGrid(
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val innerWidth = maxWidth - contentPadding.calculateStartPadding(direction) -
             contentPadding.calculateEndPadding(direction)
-        // Settings rows fit at phone-like widths; unlike rich request previews they do not
-        // need 400 dp per column. Include the gap when deciding whether both columns fit.
-        val minimumWideWidth = 320.dp * 2 + 24.dp
-        val wide = innerWidth >= minimumWideWidth
+        val wide = innerWidth >= DetailContentTwoColumnMinWidth
         val horizontalPadding = maxWidth - innerWidth
         // Reveal room for the next column without stretching the existing settings rows.
         // This limit applies only during inline pane expansion when two columns can fit.
         val retainedWidth = with(density) {
-            if (!wide && geometry != null && geometry.width.toDp() - horizontalPadding >= minimumWideWidth) {
+            if (!wide && geometry != null && geometry.width.toDp() - horizontalPadding >= DetailContentTwoColumnMinWidth) {
                 Modifier.widthIn(max = geometry.splitDetailWidth.toDp())
             } else Modifier
         }
@@ -51,7 +48,7 @@ internal fun AdaptiveDetailGrid(
             columns = StaggeredGridCells.Fixed(if (wide) 2 else 1),
             modifier = retainedWidth.fillMaxWidth().testTag("adaptive-detail-grid"),
             contentPadding = contentPadding,
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            horizontalArrangement = Arrangement.spacedBy(DetailContentColumnSpacing),
             verticalItemSpacing = verticalSpacing,
         ) { content(wide) }
     }

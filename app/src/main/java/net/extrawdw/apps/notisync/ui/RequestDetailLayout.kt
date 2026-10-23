@@ -56,12 +56,12 @@ internal fun RequestDetailLayout(
         BoxWithConstraints(modifier.fillMaxSize()) {
             val start = contentPadding.calculateStartPadding(direction)
             val end = contentPadding.calculateEndPadding(direction)
-            val wide = useWideLayout && maxWidth - start - end >= 800.dp
+            val wide = useWideLayout && maxWidth - start - end >= DetailContentTwoColumnMinWidth
             // While revealing a second column, retain the original half-pane card width.
             // Windows too narrow for two columns and standalone approvals still fill normally.
             val cardWidth = if (
                 useWideLayout && !wide && expandedPaneWidth.isSpecified &&
-                expandedPaneWidth - start - end >= 800.dp
+                expandedPaneWidth - start - end >= DetailContentTwoColumnMinWidth
             ) {
                 Modifier.widthIn(max = (splitPaneWidth - start - end).coerceAtLeast(0.dp))
             } else Modifier
@@ -86,7 +86,7 @@ internal fun RequestDetailLayout(
                 }
                 Row(
                     Modifier.fillMaxWidth().weight(1f).padding(start = start, end = end),
-                    horizontalArrangement = Arrangement.spacedBy(if (wide) 24.dp else 0.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (wide) DetailContentColumnSpacing else 0.dp),
                 ) {
                     // The wrapper keeps each scroll origin local to its column; horizontal
                     // reflow must not be mistaken for a change in the scroll offset.
