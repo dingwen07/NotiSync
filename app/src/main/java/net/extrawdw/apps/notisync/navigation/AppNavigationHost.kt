@@ -21,9 +21,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.navigation.NavHostController
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
+import androidx.compose.animation.togetherWith
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.ui.NavDisplay
 import net.extrawdw.apps.notisync.Route
 import net.extrawdw.apps.notisync.pairing.PairingHostState
 import net.extrawdw.apps.notisync.run.RunKey
@@ -43,7 +43,7 @@ import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
 
 @Composable
 internal fun AppNavigationHost(
-    navController: NavHostController,
+    navigation: AppNavigationState,
     pairing: PairingHostState,
     pairingPaneDirective: PaneScaffoldDirective,
     isRail: Boolean,
@@ -55,9 +55,8 @@ internal fun AppNavigationHost(
     openSshHistoryRequestId: String?,
     onOpenSshHistoryConsumed: () -> Unit,
 ) {
-    // NavHost remembers the graph it builds. Keep the mutable notification handoff behind stable State
-    // objects so the remembered Run destination observes the latest request instead of the value captured
-    // when the graph was first created (normally null).
+    // Decorated NavEntries retain their content lambdas. Keep handoffs and adaptive inputs behind
+    // stable State objects so retained destinations observe requests received after their creation.
     val latestOpenRun = rememberUpdatedState(openRun)
     val latestOnOpenRunConsumed = rememberUpdatedState(onOpenRunConsumed)
     val latestOpenSshHistoryRequestId = rememberUpdatedState(openSshHistoryRequestId)
@@ -70,17 +69,8 @@ internal fun AppNavigationHost(
     val latestIsRail = rememberUpdatedState(isRail)
     val latestNavigationLimit = rememberUpdatedState(navigationLimit)
 
-    NavHost(
-        navController = navController,
-        startDestination = Route.Devices,
-        modifier = Modifier.fillMaxSize(),
-        // Normal pops inherit these; predictive back seeks the same fade-through motion.
-        enterTransition = { AppNavigationTransitions.enter },
-        exitTransition = { AppNavigationTransitions.exit },
-        predictivePopEnterTransition = { AppNavigationTransitions.enter },
-        predictivePopExitTransition = { AppNavigationTransitions.exit },
-    ) {
-        composable<Route.Devices> {
+    val entries = navigation.toEntries(entryProvider {
+        entry<Route.Devices> {
             val pairing = latestPairing.value
             DevicesPairingLayout(
                 directive = latestPairingPaneDirective.value,
@@ -103,37 +93,47 @@ internal fun AppNavigationHost(
                 )
             }
         }
-        composable<Route.Apps> { AppsDestination() }
-        composable<Route.Ios> { IosScreen() }
-        composable<Route.Run> {
+        entry<Route.Apps> { AppsDestination() }
+        entry<Route.Ios> { IosScreen() }
+        entry<Route.Run> {
             RunScreen(
                 initialSelection = latestOpenRun.value,
                 onInitialSelectionConsumed = latestOnOpenRunConsumed.value,
             )
         }
-        composable<Route.Seal> { SealScreen() }
-        composable<Route.SshAgent> {
+        entry<Route.Seal> { SealScreen() }
+        entry<Route.SshAgent> {
             SshKeyProviderScreen(
                 initialHistoryRequestId = latestOpenSshHistoryRequestId.value,
                 onInitialHistoryRequestConsumed = latestOnOpenSshHistoryConsumed.value,
             )
         }
-        composable<Route.Activity> { ActivityScreen() }
-        composable<Route.Settings> {
+        entry<Route.Activity> { ActivityScreen() }
+        entry<Route.Settings> {
             SettingsScreen(onOpenAbout = {
-                navController.navigate(Route.About) { launchSingleTop = true }
+                navigation.navigate(Route.About())
             })
         }
-        composable<Route.Menu> {
+        entry<Route.Menu> {
             MenuManagementScreen(
                 navigationLimit = latestNavigationLimit.value,
-                onBack = if (latestIsRail.value) null else ({ navController.popBackStack() }),
+                onBack = if (latestIsRail.value) null else ({ navigation.goBack() }),
             )
         }
-        composable<Route.About> {
-            AboutScreen(onBack = if (latestIsRail.value) null else ({ navController.popBackStack() }))
+        entry<Route.About> {
+            AboutScreen(onBack = if (latestIsRail.value) null else ({ navigation.goBack() }))
         }
-    }
+    })
+    NavDisplay(
+        entries = entries,
+        onBack = navigation::goBack,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = { AppNavigationTransitions.enter togetherWith AppNavigationTransitions.exit },
+        popTransitionSpec = { AppNavigationTransitions.enter togetherWith AppNavigationTransitions.exit },
+        predictivePopTransitionSpec = {
+            AppNavigationTransitions.enter togetherWith AppNavigationTransitions.exit
+        },
+    )
 }
 
 /** Hosts the permission/launcher plumbing the Devices screen needs, scoped to that destination. */

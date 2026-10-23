@@ -69,7 +69,7 @@ internal fun PairingHost(
     val resources by rememberUpdatedState(LocalResources.current)
     val openDevices by rememberUpdatedState(onOpenDevices)
     val pairing = remember { PairingManager(graph) }
-    // Called outside the NavHost, so pending trust decisions retain the Activity's ViewModel scope.
+    // Called outside the navigation host, so pending trust decisions retain the Activity's ViewModel scope.
     val pairingUi = androidx.lifecycle.viewmodel.compose.viewModel { PairingViewModel() }
     // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
     // this also blocks the deep-link path so a pairing link can't bypass the freeze.

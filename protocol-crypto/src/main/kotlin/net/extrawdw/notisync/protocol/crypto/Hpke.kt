@@ -35,8 +35,11 @@ object Hpke {
 
     fun generateKeyPair(): HpkeKeyPair {
         CryptoInit.ensure()
-        val handle = KeysetHandle.generateNew(params)
-        val publicKeyset = TinkProtoKeysetFormat.serializeKeysetWithoutSecret(handle.publicKeysetHandle)
+        val handle = KeysetHandle.generateNew(params, RegistryConfiguration.get())
+        val publicKeyset = TinkProtoKeysetFormat.serializeKeysetWithoutSecret(
+            handle.publicKeysetHandle,
+            RegistryConfiguration.get(),
+        )
         val privateKeyset = TinkProtoKeysetFormat.serializeKeyset(
             handle,
             InsecureSecretKeyAccess.get(),
@@ -58,7 +61,7 @@ object Hpke {
     fun seal(dek: ByteArray, publicKeyset: ByteArray, contextInfo: ByteArray): ByteArray {
         CryptoInit.ensure()
         if (publicKeyset.size == RAW_X25519_KEY_LEN) return sealToRaw(dek, publicKeyset, contextInfo)
-        val handle = TinkProtoKeysetFormat.parseKeysetWithoutSecret(publicKeyset)
+        val handle = TinkProtoKeysetFormat.parseKeysetWithoutSecret(publicKeyset, RegistryConfiguration.get())
         val enc = handle.getPrimitive(RegistryConfiguration.get(), HybridEncrypt::class.java)
         return enc.encrypt(dek, contextInfo)
     }
@@ -71,7 +74,7 @@ object Hpke {
      */
     fun rawPublicKey(publicKeyset: ByteArray): ByteArray {
         CryptoInit.ensure()
-        val handle = TinkProtoKeysetFormat.parseKeysetWithoutSecret(publicKeyset)
+        val handle = TinkProtoKeysetFormat.parseKeysetWithoutSecret(publicKeyset, RegistryConfiguration.get())
         val key = handle.getAt(0).key as HpkePublicKey
         return key.publicKeyBytes.toByteArray()
     }

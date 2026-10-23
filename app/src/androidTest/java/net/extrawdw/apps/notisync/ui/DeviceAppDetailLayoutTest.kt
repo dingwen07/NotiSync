@@ -266,7 +266,7 @@ class DeviceAppDetailLayoutTest {
     private fun Fixture(detail: @Composable () -> Unit) {
         NotiSyncTheme {
             AppNavigationShell(
-                menuConfiguration = MenuConfiguration(), currentDestination = null,
+                menuConfiguration = MenuConfiguration(), currentDestination = net.extrawdw.apps.notisync.Route.Devices,
                 openMenuDestination = null, onNavigationRequestStarted = {},
                 onOpenMenuDestinationConsumed = {}, onNavigate = {}, openMenu = {}, openAbout = {},
             ) { _, _ ->

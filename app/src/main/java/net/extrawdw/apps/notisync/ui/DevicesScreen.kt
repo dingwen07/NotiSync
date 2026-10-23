@@ -153,7 +153,7 @@ internal fun DevicesPairingLayout(
                     })
                 }
             },
-            sceneStrategy = sceneStrategy,
+            sceneStrategies = listOf(sceneStrategy),
             onBack = onClosePairing,
             modifier = Modifier.fillMaxSize(),
         )

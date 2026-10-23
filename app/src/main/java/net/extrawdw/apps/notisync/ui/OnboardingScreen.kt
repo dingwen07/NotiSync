@@ -89,7 +89,7 @@ private fun previousStep(from: OnboardingStep, listenerEnabled: Boolean): Onboar
  * First-launch setup wizard: welcome → post-notifications permission → notification-listener access
  * (grant or skip; granting continues into the choose-apps-to-mirror reminder) → iPhone bridge pairing
  * (skippable) → pair-your-other-devices guidance. Finishing lands on the Devices tab, which is the
- * NavHost start destination that composes right after [onFinish].
+ * navigation start destination that composes right after [onFinish].
  */
 @Composable
 fun OnboardingScreen(onFinish: () -> Unit) {

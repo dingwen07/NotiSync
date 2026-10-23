@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
                                     graph.scope.launch { graph.settings.setOnboardingCompleted() }
                                 },
                             )
-                            // Finishing onboarding lands here with Devices as the NavHost start destination;
+                            // Finishing onboarding lands here with Devices as the navigation start destination;
                             // a pairing deep link received during onboarding is still pending and opens now.
                             true -> NotiSyncRoot(
                                 pendingPairingPayload = pairingPayload,

@@ -124,7 +124,7 @@ class AdaptivePaneNavigationTest {
             NotiSyncTheme {
                 AppNavigationShell(
                     menuConfiguration = MenuConfiguration(),
-                    currentDestination = null,
+                    currentDestination = net.extrawdw.apps.notisync.Route.Devices,
                     openMenuDestination = null,
                     onNavigationRequestStarted = {},
                     onOpenMenuDestinationConsumed = {},

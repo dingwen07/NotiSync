@@ -10,13 +10,12 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
 import net.extrawdw.apps.notisync.navigation.AppNavigationHost
 import net.extrawdw.apps.notisync.navigation.AppNavigationShell
+import net.extrawdw.apps.notisync.navigation.rememberAppNavigationState
 import net.extrawdw.apps.notisync.navigation.MenuDestination
 import net.extrawdw.apps.notisync.pairing.PairingHost
 import net.extrawdw.apps.notisync.run.RunKey
@@ -43,9 +42,8 @@ fun NotiSyncRoot(
     val context = LocalContext.current
     val graph = rememberGraph()
     val menuConfiguration by graph.settings.menuConfiguration.collectAsStateWithLifecycle()
-    val navController = rememberNavController()
-    val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentDestination = backStackEntry?.destination
+    val navigation = rememberAppNavigationState()
+    val currentDestination = navigation.currentRoute
     val pairingPaneDirective = rememberDevicesPairingDirective()
     val usePairingPane = pairingPaneDirective.maxHorizontalPartitions > 1
     val configuration = LocalConfiguration.current
@@ -70,11 +68,11 @@ fun NotiSyncRoot(
         onPendingHcePairingPayloadConsumed = onPendingHcePairingPayloadConsumed,
         foregroundResumeGeneration = foregroundResumeGeneration,
         usePairingPane = usePairingPane,
-        onOpenDevices = { navController.navigateToTopLevel(AppDestination.DEVICES) },
+        onOpenDevices = { navigation.navigateToTopLevel(AppDestination.DEVICES) },
     ) { pairing ->
         LaunchedEffect(openDevices) {
             if (openDevices) {
-                navController.navigateToTopLevel(AppDestination.DEVICES)
+                navigation.navigateToTopLevel(AppDestination.DEVICES)
                 onOpenDevicesConsumed()
             }
         }
@@ -82,7 +80,7 @@ fun NotiSyncRoot(
         LaunchedEffect(openDeviceDetails) {
             if (openDeviceDetails != null) {
                 pairing.close()
-                navController.navigateToTopLevel(AppDestination.DEVICES)
+                navigation.navigateToTopLevel(AppDestination.DEVICES)
             }
         }
 
@@ -91,19 +89,19 @@ fun NotiSyncRoot(
                 // Pairing is not a navigation destination, so changing tabs alone leaves it drawn above Run.
                 // A notification open is explicit navigation: dismiss the overlay before selecting the Run tab.
                 pairing.isOpen = pairingOverlayAfterRunOpenRequest(pairing.isOpen, openRun)
-                navController.navigateToTopLevel(AppDestination.RUN)
+                navigation.navigateToTopLevel(AppDestination.RUN)
             }
         }
 
         LaunchedEffect(openSshHistoryRequestId) {
             if (openSshHistoryRequestId != null) {
                 pairing.close()
-                navController.navigateToTopLevel(AppDestination.SSH_AGENT)
+                navigation.navigateToTopLevel(AppDestination.SSH_AGENT)
             }
         }
 
         LaunchedEffect(currentDestination, usePairingPane) {
-            if (usePairingPane && currentDestination != null && !currentDestination.isOn(AppDestination.DEVICES)) {
+            if (usePairingPane && !currentDestination.isOn(AppDestination.DEVICES)) {
                 pairing.close()
             }
         }
@@ -113,12 +111,12 @@ fun NotiSyncRoot(
             openMenuDestination = openMenuDestination,
             onNavigationRequestStarted = pairing::close,
             onOpenMenuDestinationConsumed = onOpenMenuDestinationConsumed,
-            onNavigate = navController::navigateToTopLevel,
-            openMenu = { navController.navigate(Route.Menu) { launchSingleTop = true } },
-            openAbout = { navController.navigate(Route.About) { launchSingleTop = true } },
+            onNavigate = navigation::navigateToTopLevel,
+            openMenu = { navigation.navigate(Route.Menu()) },
+            openAbout = { navigation.navigate(Route.About()) },
         ) { isRail, navigationLimit ->
             AppNavigationHost(
-                navController = navController,
+                navigation = navigation,
                 pairing = pairing,
                 pairingPaneDirective = pairingPaneDirective,
                 isRail = isRail,

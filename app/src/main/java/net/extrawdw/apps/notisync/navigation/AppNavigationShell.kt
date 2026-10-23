@@ -44,8 +44,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
-import androidx.navigation.NavDestination
-import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.window.core.layout.WindowSizeClass
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.AppDestination
@@ -62,7 +60,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu_open as MenuOp
 @Composable
 internal fun AppNavigationShell(
     menuConfiguration: MenuConfiguration,
-    currentDestination: NavDestination?,
+    currentDestination: Route,
     openMenuDestination: MenuDestination?,
     onNavigationRequestStarted: () -> Unit,
     onOpenMenuDestinationConsumed: () -> Unit,
@@ -172,12 +170,12 @@ internal fun AppNavigationShell(
                     modifier = if (suiteIsRail) Modifier.railItemHeight(
                         expanded = type == NavigationSuiteType.WideNavigationRailExpanded,
                     ) else Modifier,
-                    selected = currentDestination?.hasRoute<Route.Menu>() == true,
+                    selected = currentDestination is Route.Menu,
                     onClick = { navigateFromNavigation(openMenu) },
                     icon = {
                         NavigationSelectionIcon(
                             EditIcon, R.drawable.avd_nav_edit,
-                            currentDestination?.hasRoute<Route.Menu>() == true, null,
+                            currentDestination is Route.Menu, null,
                         )
                     },
                     label = { Text(stringResource(R.string.menu_title)) },
@@ -189,12 +187,12 @@ internal fun AppNavigationShell(
                     modifier = if (suiteIsRail) Modifier.railItemHeight(
                         expanded = type == NavigationSuiteType.WideNavigationRailExpanded,
                     ) else Modifier,
-                    selected = currentDestination?.hasRoute<Route.About>() == true,
+                    selected = currentDestination is Route.About,
                     onClick = { navigateFromNavigation(openAbout) },
                     icon = {
                         NavigationSelectionIcon(
                             InfoIcon, R.drawable.avd_nav_info,
-                            currentDestination?.hasRoute<Route.About>() == true, null,
+                            currentDestination is Route.About, null,
                         )
                     },
                     label = { Text(stringResource(R.string.about_title)) },
@@ -269,12 +267,12 @@ internal fun AppNavigationShell(
                 }
                 HorizontalDivider()
                 NavigationDrawerItem(
-                    selected = currentDestination?.hasRoute<Route.About>() == true,
+                    selected = currentDestination is Route.About,
                     onClick = { drawerScope.launch { featureDrawerState.close(); openAbout() } },
                     icon = {
                         NavigationSelectionIcon(
                             InfoIcon, R.drawable.avd_nav_info,
-                            currentDestination?.hasRoute<Route.About>() == true, null,
+                            currentDestination is Route.About, null,
                         )
                     },
                     label = { Text(stringResource(R.string.about_title)) },

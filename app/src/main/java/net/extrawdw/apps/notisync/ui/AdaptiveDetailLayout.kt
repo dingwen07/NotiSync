@@ -212,13 +212,13 @@ internal fun <T> AdaptiveDetailLayout(
             enabled = paneOpen && !paneState.opening && !paneState.closing,
             interactionSource = contentInteractionSource,
         )
-        val strategy = if (wide) materialStrategy then sheetStrategy else sheetStrategy then materialStrategy
+        val strategies = if (wide) listOf(materialStrategy, sheetStrategy) else listOf(sheetStrategy, materialStrategy)
         // Keep NavDisplay's native transitions: its scene-entry exclusion cleanup runs when
         // a transition completes. Zero-duration overrides can leave a returning list excluded.
         NavDisplay(
             modifier = paneSwipe,
             backStack = listOf("list") + listOfNotNull(selectedKey?.let { "detail" }),
-            sceneStrategy = strategy,
+            sceneStrategies = strategies,
             onBack = onDismiss,
             entryProvider = { key ->
                 if (key == "list") {
