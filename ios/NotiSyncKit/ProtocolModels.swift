@@ -400,6 +400,14 @@ nonisolated struct ScreenRelayJoin: Codable, Sendable {
     var role: ScreenRelayRole
     var channel: ScreenRelayChannel
     var expiresAt: Int64
+
+    /// The broker accepts exactly 32 Base64URL ASCII bytes, not Unicode letters/digits.
+    static func isRelayIdByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 65...90, 97...122, 48...57, 45, 95: true // A-Z, a-z, 0-9, -, _
+        default: false
+        }
+    }
 }
 
 /// Broker registration and Relay-video flow-control signal.

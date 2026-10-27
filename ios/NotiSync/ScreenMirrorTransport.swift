@@ -1195,12 +1195,6 @@ private nonisolated struct IOSScreenDataReader {
 }
 
 nonisolated extension Data {
-    func base64URLEncoded() -> String {
-        base64EncodedString().replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
     mutating func appendUInt16(_ value: UInt16) {
         append(UInt8((value >> 8) & 0xff)); append(UInt8(value & 0xff))
     }

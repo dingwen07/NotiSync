@@ -187,12 +187,11 @@ actor BrokerClient {
 
     /// Authenticate and register one requester/source channel on the broker's v1 screen Relay.
     func openScreenRelay(_ join: ScreenRelayJoin) async throws -> BrokerScreenRelayConnection {
-        let relayCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
         guard join.relayId.utf8.count == 32 else {
             throw BrokerScreenRelayError.invalidRequest("Relay ID has \(join.relayId.utf8.count) bytes; expected 32.")
         }
-        guard join.relayId.unicodeScalars.allSatisfy(relayCharacters.contains) else {
-            throw BrokerScreenRelayError.invalidRequest("Relay ID contains unsupported characters.")
+        if let invalidByte = join.relayId.utf8.first(where: { !ScreenRelayJoin.isRelayIdByte($0) }) {
+            throw BrokerScreenRelayError.invalidRequest("Relay ID contains unsupported byte 0x\(String(invalidByte, radix: 16)).")
         }
         let now = Int64(Date().timeIntervalSince1970 * 1_000)
         guard join.expiresAt > now else {
