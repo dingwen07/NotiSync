@@ -34,14 +34,14 @@ private nonisolated enum WebSocketLoopEvent: Sendable {
 }
 
 nonisolated enum BrokerScreenRelayError: Error, LocalizedError {
-    case invalidRequest
+    case invalidRequest(String)
     case registrationFailed(String)
     case unexpectedMessage
     case timedOut
 
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: "The broker Relay request is invalid or expired."
+        case .invalidRequest(let detail): "The broker Relay request is invalid: \(detail)"
         case .registrationFailed(let detail): "The broker Relay rejected this connection: \(detail)"
         case .unexpectedMessage: "The broker Relay sent an unexpected message."
         case .timedOut: "The broker Relay did not respond in time."
@@ -188,11 +188,18 @@ actor BrokerClient {
     /// Authenticate and register one requester/source channel on the broker's v1 screen Relay.
     func openScreenRelay(_ join: ScreenRelayJoin) async throws -> BrokerScreenRelayConnection {
         let relayCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
-        guard join.relayId.utf8.count == 32,
-              join.relayId.unicodeScalars.allSatisfy(relayCharacters.contains),
-              join.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000),
-              let websocketURL = URL(string: wsBase() + "/v1/screen-relay") else {
-            throw BrokerScreenRelayError.invalidRequest
+        guard join.relayId.utf8.count == 32 else {
+            throw BrokerScreenRelayError.invalidRequest("Relay ID has \(join.relayId.utf8.count) bytes; expected 32.")
+        }
+        guard join.relayId.unicodeScalars.allSatisfy(relayCharacters.contains) else {
+            throw BrokerScreenRelayError.invalidRequest("Relay ID contains unsupported characters.")
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        guard join.expiresAt > now else {
+            throw BrokerScreenRelayError.invalidRequest("Request expired (expiry \(join.expiresAt), current time \(now), milliseconds since 1970).")
+        }
+        guard let websocketURL = URL(string: wsBase() + "/v1/screen-relay") else {
+            throw BrokerError.badURL
         }
 
         let signingURL = try url("/v1/screen-relay")
