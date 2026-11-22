@@ -82,10 +82,10 @@ object IosCompanion {
         if (prefs(context).getInt(ASSOCIATION, -1) != info.id) savePeer(context, peer)
     }
 
-    data class Peer(
+    internal data class Peer(
         val address: String,
         val name: String?,
-        val newServerLinkAt: Long? = null,
+        val nativeOffer: IphonePairingCandidates.Offer? = null,
     )
 
     @SuppressLint("MissingPermission")

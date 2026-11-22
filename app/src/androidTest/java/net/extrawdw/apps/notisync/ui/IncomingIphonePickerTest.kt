@@ -16,8 +16,8 @@ class IncomingIphonePickerTest {
 
     @Test
     fun duplicateNamesSelectOnlyTheTappedBluetoothAddress() {
-        val first = Peer("AA:00:00:00:00:01", "iPhone", newServerLinkAt = 1L)
-        val second = Peer("AA:00:00:00:00:02", "iPhone", newServerLinkAt = 2L)
+        val first = Peer("AA:00:00:00:00:01", "iPhone")
+        val second = Peer("AA:00:00:00:00:02", "iPhone")
         val selections = mutableListOf<Peer>()
         compose.setContent {
             IncomingIphonePicker(listOf(first, second), onDismiss = {}, onSelect = selections::add)

@@ -94,8 +94,7 @@ class IosBridgeManager(
     private var connectedDevice: BluetoothDevice? = null
 
     private val lePeers = mutableMapOf<String, BluetoothDevice>()
-    private val newLeLinks = mutableMapOf<String, Long>()
-    private val serverLinks = mutableSetOf<String>()
+    private val pairingCandidates = deviceRepo.pairingCandidates
     private var enrolling: BluetoothDevice? = null
     private var setupDevice: BluetoothDevice? = null
         set(value) {
@@ -408,8 +407,8 @@ class IosBridgeManager(
                     if (!running || resettingPeripheral || serverCallback !== this) return@post
                     when (newState) {
                         BluetoothProfile.STATE_CONNECTED -> if (status == BluetoothGatt.GATT_SUCCESS) {
-                            serverLinks.add(device.address)
-                            if (leLinkState(device) == true || device.address in newLeLinks) {
+                            pairingCandidates.serverConnectionChanged(device.address, connected = true)
+                            if (leLinkState(device) == true || device.address in lePeers) {
                                 lePeers[device.address] = device
                                 publishLePeers()
                             }
@@ -417,7 +416,7 @@ class IosBridgeManager(
                             attach(listOf(device))
                         }
                         BluetoothProfile.STATE_DISCONNECTED -> {
-                            serverLinks.remove(device.address)
+                            pairingCandidates.serverConnectionChanged(device.address, connected = false)
                             if (leLinkState(device) != true) lePeers.remove(device.address)
                             publishLePeers()
                             if (device == setupDevice && leLinkState(device) != true) setupDevice = null
@@ -452,18 +451,22 @@ class IosBridgeManager(
 
     private fun clearEnrollment() {
         enrolling = null
-        newLeLinks.clear()
-        serverLinks.clear()
+        pairingCandidates.clearLinks()
         lePeers.clear()
         deviceRepo.setConnectedLePeers(emptyList())
     }
 
     private fun publishLePeers() {
         val peers = lePeers.values.map { device ->
-            IosCompanion.Peer(device.address, device.name,
-                newServerLinkAt = newLeLinks[device.address].takeIf { device.address in serverLinks })
+            IosCompanion.Peer(device.address, device.name, pairingCandidates.offer(device.address) { device.hasBridgeBond() })
         }
         deviceRepo.setConnectedLePeers(peers.sortedWith(compareBy({ it.name.orEmpty() }, { it.address })))
+    }
+
+    internal fun currentPairingOffer(address: String): IphonePairingCandidates.Offer? {
+        val device = lePeers[address] ?: return null
+        if (leLinkState(device) == false) return null
+        return pairingCandidates.offer(address) { device.hasBridgeBond() }
     }
 
     /** A Classic CDM selection cannot authenticate a separate, unbonded LE address. Pair only the
@@ -709,21 +712,46 @@ class IosBridgeManager(
 
     private val bondReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
-            val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-            val device =
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            val device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java) ?: return
+            if (!running || resettingPeripheral) return
+            val transport = intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO)
+            if (intent.action == BluetoothDevice.ACTION_PAIRING_REQUEST) {
+                val passkeyConfirmation = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, -1) ==
+                    BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION
+                val repair = Build.VERSION.SDK_INT >= 37 && intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_CONTEXT, -1) ==
+                    BluetoothDevice.PAIRING_CONTEXT_REPAIRING
+                if (transport != BluetoothDevice.TRANSPORT_BREDR && (passkeyConfirmation || repair)) {
+                    pairingCandidates.repairRequested(device.address)
+                }
+                return
+            }
+            if (Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1 &&
+                intent.action == BluetoothDevice.ACTION_KEY_MISSING) {
+                if (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_LOSS_REASON, -1) == BluetoothDevice.BOND_LOSS_REASON_LE_INCOMING_PAIRING) {
+                    pairingCandidates.repairRequested(device.address)
+                }
+                return
+            }
+            if (Build.VERSION.SDK_INT >= 36 && intent.action == BluetoothDevice.ACTION_ENCRYPTION_CHANGE) {
+                if (transport == BluetoothDevice.TRANSPORT_LE) {
+                    val encrypted = intent.getBooleanExtra(BluetoothDevice.EXTRA_ENCRYPTION_ENABLED, false) &&
+                        intent.getIntExtra(BluetoothDevice.EXTRA_ENCRYPTION_STATUS, -1) == 0
+                    if (pairingCandidates.leEncryptionChanged(device.address, encrypted, SystemClock.elapsedRealtime())) {
+                        Log.i(TAG, "iPhone setup observed an encrypted LE re-pair")
+                        publishLePeers()
+                    }
+                }
+                return
+            }
             if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED || intent.action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
-                if (!running || resettingPeripheral || device == null ||
-                    intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO) != BluetoothDevice.TRANSPORT_LE) return
+                if (transport != BluetoothDevice.TRANSPORT_LE) return
                 if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
-                    // Capture at arrival. Either phone can finish bonding before the access dialog returns.
-                    if (!device.hasBridgeBond()) newLeLinks.putIfAbsent(device.address, android.os.SystemClock.elapsedRealtime())
+                    pairingCandidates.leConnected(device.address, device.hasBridgeBond(), SystemClock.elapsedRealtime())
                     lePeers[device.address] = device
                     updateSelection()
                     attach(listOf(device))
                 } else {
-                    newLeLinks.remove(device.address)
-                    serverLinks.remove(device.address)
+                    pairingCandidates.leDisconnected(device.address)
                     lePeers.remove(device.address)
                     if (device == enrolling) {
                         enrolling = null
@@ -734,7 +762,11 @@ class IosBridgeManager(
                 syncAdvertising()
                 return
             }
-            if (device != null && device == enrolling) {
+            val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
+            if (device.address in lePeers && (state == BluetoothDevice.BOND_NONE || state == BluetoothDevice.BOND_BONDED)) {
+                publishLePeers()
+            }
+            if (device == enrolling) {
                 if (state == BluetoothDevice.BOND_BONDED && device.hasBridgeBond()) acceptBondedEndpoint(device)
                 else if (state == BluetoothDevice.BOND_NONE) {
                     enrolling = null
@@ -742,8 +774,8 @@ class IosBridgeManager(
                 }
                 return
             }
-            Log.i(TAG, "bond state -> $state for ${device?.address}")
-            if (device == null || !device.address.equals(selectedPeer?.address, ignoreCase = true)) return
+            Log.i(TAG, "bond state -> $state for ${device.address}")
+            if (!device.address.equals(selectedPeer?.address, ignoreCase = true)) return
             when (state) {
                 BluetoothDevice.BOND_BONDED -> if (client == null) tryAttachConnected() else if (device.hasBridgeBond()) client?.onBonded()
                 BluetoothDevice.BOND_NONE -> if (device == connectedDevice) onCentralDisconnected()
@@ -758,6 +790,11 @@ class IosBridgeManager(
             context, bondReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED).apply {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                if (Build.VERSION.SDK_INT >= 36) {
+                    addAction(BluetoothDevice.ACTION_PAIRING_REQUEST)
+                    addAction(BluetoothDevice.ACTION_ENCRYPTION_CHANGE)
+                    if (Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) addAction(BluetoothDevice.ACTION_KEY_MISSING)
+                }
             },
             ContextCompat.RECEIVER_EXPORTED,
         )

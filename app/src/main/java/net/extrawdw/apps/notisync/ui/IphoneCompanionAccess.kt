@@ -4,6 +4,7 @@ import android.app.Activity
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceManager
 import android.content.IntentSender
+import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
@@ -30,21 +31,29 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
     val notifySelected by rememberUpdatedState(onSelected)
     val enabledNow by rememberUpdatedState(enabled)
     val helperMode by rememberUpdatedState(appSetup)
-    var resumedSince by remember { mutableStateOf<Long?>(null) }
-    var attemptedAt by rememberSaveable { mutableLongStateOf(-1L) }
+    val setupSession = rememberSaveable(enabled, appSetup) { SystemClock.elapsedRealtimeNanos() }
+    var resumed by remember { mutableStateOf(false) }
+    val attemptedLinks = rememberSaveable(setupSession) { Bundle() }
     var offeredHelper by rememberSaveable { mutableStateOf<String?>(null) }
     var pending by rememberSaveable { mutableStateOf<String?>(null) }
     // A null timestamp identifies an encrypted helper request, which can already be bonded.
     var pendingLink by rememberSaveable { mutableStateOf<Long?>(null) }
+    var confirmation by rememberSaveable { mutableStateOf<IntentSender?>(null) }
     var ambiguous by remember { mutableStateOf(emptyList<IosCompanion.Peer>()) }
     var active by remember { mutableStateOf(true) }
     DisposableEffect(Unit) { onDispose { active = false } }
-    LifecycleResumeEffect(enabled) {
-        if (enabled) resumedSince = SystemClock.elapsedRealtime()
-        onPauseOrDispose { resumedSince = null }
+    LifecycleResumeEffect(setupSession) {
+        resumed = enabled
+        val candidates = graph.iosDeviceRepo.pairingCandidates
+        if (enabled && !appSetup) candidates.foregroundSession = setupSession
+        onPauseOrDispose {
+            resumed = false
+            if (candidates.foregroundSession == setupSession) candidates.foregroundSession = null
+        }
     }
 
     fun failed() {
+        confirmation = null
         pending = null
         if (active && enabledNow) Toast.makeText(context, R.string.ios_pairing_try_live, Toast.LENGTH_LONG).show()
     }
@@ -63,9 +72,12 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
                 failed()
                 return
             }
-        } else if (graph.iosDeviceRepo.connectedLePeers.value.none { it.address == address && it.newServerLinkAt == nativeLink }) {
-            failed()
-            return
+        } else {
+            val offer = manager?.currentPairingOffer(address)
+            if (offer?.session != setupSession || offer.eligibleAt != nativeLink) {
+                failed()
+                return
+            }
         }
         pending = null
         IosCompanion.selectAssociation(context, info)
@@ -80,8 +92,19 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
             if (info != null) approved(info) else if (pending != null) failed()
         } else pending = null
     }
+    // Android's pairing dialog can pause setup while CDM is preparing its own confirmation.
+    LaunchedEffect(confirmation, resumed, enabled, appSetup, pending) {
+        val sender = confirmation ?: return@LaunchedEffect
+        if (pending == null || !enabled || appSetup != (pendingLink == null)) {
+            confirmation = null
+            pending = null
+        } else if (resumed) {
+            confirmation = null
+            runCatching { launcher.launch(IntentSenderRequest.Builder(sender).build()) }.onFailure { failed() }
+        }
+    }
     fun request(address: String, link: Long?) {
-        if (pending != null || resumedSince == null) return
+        if (pending != null || !resumed) return
         val cdm = IosCompanion.manager(context) ?: return failed()
         pendingLink = link
         pending = address
@@ -89,18 +112,19 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
         runCatching {
             cdm.associate(IosCompanion.request(address), context.mainExecutor, object : CompanionDeviceManager.Callback() {
                 override fun onAssociationPending(intentSender: IntentSender) {
-                    if (!active || pending != address) return
-                    if (!enabledNow || resumedSince == null) { pending = null; return }
-                    runCatching { launcher.launch(IntentSenderRequest.Builder(intentSender).build()) }.onFailure { failed() }
+                    if (active && pending == address && pendingLink == link) confirmation = intentSender
                 }
                 override fun onAssociationCreated(associationInfo: AssociationInfo) { if (pending == address) approved(associationInfo) }
                 override fun onFailure(message: CharSequence?) { if (active && pending == address) failed() }
             })
         }.onFailure { failed() }
     }
-    LaunchedEffect(enabled, resumedSince, appSetup, peers, pending, setupPeer, selected) {
-        val start = resumedSince ?: return@LaunchedEffect
-        if (!enabled || pending != null) return@LaunchedEffect
+    fun requestNative(peer: IosCompanion.Peer) {
+        val offer = peer.nativeOffer ?: return
+        if (offer.session == setupSession) request(peer.address, offer.eligibleAt)
+    }
+    LaunchedEffect(enabled, resumed, appSetup, peers, pending, setupPeer, selected, setupSession) {
+        if (!resumed || !enabled || pending != null) return@LaunchedEffect
         if (appSetup) {
             val address = setupPeer?.address ?: selected?.address
             if (address == null) { offeredHelper = null; return@LaunchedEffect }
@@ -110,20 +134,24 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
             offeredHelper = address
             request(address, null)
         } else {
-            val arrivals = peers.filter { it.newServerLinkAt?.let { time -> time >= start && time > attemptedAt } == true }
+            val arrivals = peers.filter { peer ->
+                val offer = peer.nativeOffer ?: return@filter false
+                offer.session == setupSession && attemptedLinks.getLong(peer.address, -1L) != offer.eligibleAt
+            }
             if (arrivals.isEmpty()) return@LaunchedEffect
             delay(250) // Allow simultaneous notifications from the Bluetooth stack to arrive together.
-            attemptedAt = arrivals.maxOf { it.newServerLinkAt!! }
-            if (arrivals.size == 1 && ambiguous.isEmpty()) request(arrivals.single().address, arrivals.single().newServerLinkAt)
+            arrivals.forEach { attemptedLinks.putLong(it.address, it.nativeOffer!!.eligibleAt) }
+            if (arrivals.size == 1 && ambiguous.isEmpty()) requestNative(arrivals.single())
             else ambiguous = (ambiguous + arrivals).distinct()
         }
     }
     if (enabled && !appSetup && ambiguous.isNotEmpty()) {
-        val live = ambiguous.filter { candidate -> peers.any { it.address == candidate.address && it.newServerLinkAt == candidate.newServerLinkAt } }
+        val live = ambiguous.filter { candidate -> candidate.nativeOffer?.session == setupSession &&
+            peers.any { it.address == candidate.address && it.nativeOffer == candidate.nativeOffer } }
         if (live.isEmpty()) LaunchedEffect(Unit) { ambiguous = emptyList() }
         else IncomingIphonePicker(live, onDismiss = { ambiguous = emptyList() }) { peer ->
             ambiguous = emptyList()
-            request(peer.address, peer.newServerLinkAt)
+            requestNative(peer)
         }
     }
 }
