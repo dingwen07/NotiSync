@@ -20,7 +20,7 @@ NotiSync mirrors notifications from the apps you choose to your other devices, w
 ## What you can do
 
 - **Keep notifications in sync.** Mirror selected Android apps, reply or use supported actions from another device, and synchronize dismissals.
-- **Connect an iPhone.** Receive mirrored notifications in the iOS app, or use an Android device's Bluetooth bridge to forward iPhone notifications without an iOS companion app.
+- **Connect an iPhone.** Receive mirrored notifications in the iOS app, or use an Android device's Bluetooth bridge to forward iPhone notifications. The bridge supports setup in Bluetooth Settings or through the iOS app on phones that need it.
 - **Follow terminal work with [Run](docs/desktop.md#notisync-run).** Watch command output, answer supported prompts, and control a process from Android.
 - **Create Git signatures remomtely with [Seal](docs/seal.md).** Sign commits and annotated tags using OpenKeychain on a trusted Android device.
 - **Use your phone as an [SSH key provider](docs/ssh-agent.md).** Connect standard SSH clients to NotiSync SSH Agent and approve signing requests on a trusted device.
@@ -45,7 +45,7 @@ The iOS app cannot capture other apps' notifications directly. Forwarding iPhone
 4. On Android, open **Apps** and enable the apps you want to mirror. Nothing is forwarded until you choose your apps.
 5. To use advanced features like Run, Seal and SSH Agent, follow [desktop setup](docs/desktop.md) to install on a computer.
 
-The apps use the default broker out of the box. You can also [host your own broker](docs/self-hosting.md). See [getting started](docs/getting-started.md) for mutual pairing, the iPhone bridge, and custom brokers.
+The apps use the default broker out of the box. You can also [host your own broker](docs/self-hosting.md). See [getting started](docs/getting-started.md) for mutual pairing and custom brokers.
 
 > [!IMPORTANT]
 > FCM/APNs push delivery will not work with the production Google Play or App Store builds when using your own broker. Push delivery requires your own app builds and matching credentials; see the [self-hosting limitation](docs/self-hosting.md#push-delivery-limitation).
@@ -64,7 +64,8 @@ See the [pairing guide](docs/getting-started.md#device-pairing) for step-by-step
 
 | Guide | Contents |
 | --- | --- |
-| [Getting started](docs/getting-started.md) | Permissions, QR/NFC pairing, app selection, and iPhone bridge |
+| [Getting started](docs/getting-started.md) | Permissions, QR/NFC pairing, and app selection |
+| [iOS bridge](docs/ios-bridge.md) | Bluetooth setup, iPhone notifications (ANCS), and media controls (AMS) |
 | [Desktop tools](docs/desktop.md) | Installation, daemon lifecycle, Run, and agent skills |
 | [NotiSync Seal](docs/seal.md) | OpenKeychain setup, Git signing, verification, and rollback |
 | [SSH Agent](docs/ssh-agent.md) | Phone key providers, SSH clients, Windows/WSL setup, and troubleshooting |

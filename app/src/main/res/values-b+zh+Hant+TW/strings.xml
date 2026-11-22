@@ -472,7 +472,7 @@
     <string name="app_config_update_every">每次更新</string>
     <string name="app_config_update_seconds">%1$d 秒</string>
     <string name="app_config_ongoing_ios_title">傳送到 iPhone 和 iPad</string>
-    <string name="app_config_ongoing_ios_desc">同時將此應用程式的非媒體持續性通知鏡像到您的 Apple 裝置。注意：由於 iOS 應用程式未取得通知篩選權限，每次更新時，iOS 都會顯示一則新通知，而不會更新現有通知。</string>
+    <string name="app_config_ongoing_ios_desc">同時將此應用程式的非媒體持續性通知鏡像到您的 Apple 裝置。注意：由於 NotiSync iOS 應用程式未取得通知篩選權限，每次更新時，iOS 都會顯示一則新通知，而不會更新現有通知。</string>
     <string name="app_config_media_ios_title">傳送媒體播放到 iPhone 和 iPad</string>
     <string name="app_config_media_ios_desc">同時將該應用程式的媒體播放通知鏡像到您的 Apple 裝置。預設關閉，因為播放更新可能會在 iOS 上重新提醒。</string>
     <string name="app_config_ring_calls_title">來電響鈴</string>
@@ -953,16 +953,35 @@
     <string name="ios_bridge_card_title">透過藍牙連線 iPhone</string>
     <string name="ios_connected_device">已連線到 %1$s</string>
     <string name="ios_pairing_title">配對 iPhone</string>
+    <string name="ios_pairing_title_paired">已配對的 iPhone</string>
     <string name="ios_pairing_off">透過藍牙配對您的 iPhone 以存取其通知。</string>
     <string name="ios_pairing_on">已與 %1$s 配對</string>
     <string name="ios_pairing_on_unknown">已配對</string>
-    <string name="ios_pairing_setup">配對</string>
+    <string name="ios_pairing_needs_enrollment">%1$s · 需完成配對</string>
+    <string name="ios_pairing_needs_enrollment_unknown">需完成配對</string>
+    <string name="ios_pairing_start">配對</string>
+    <string name="ios_setup_mode_bluetooth">藍牙設定</string>
+    <string name="ios_setup_mode_app">NotiSync iOS</string>
+    <string name="ios_setup_step_bluetooth_1">在 iPhone 的「設定」中開啟「藍牙」，然後在「其他裝置」下點選這部 Android 裝置。</string>
+    <string name="ios_setup_step_bluetooth_2">出現提示時，在 Android 上允許存取此裝置。</string>
+    <string name="ios_setup_step_bluetooth_3">核對兩部裝置上的配對碼，並在 iPhone 上允許分享系統通知。</string>
+    <string name="ios_setup_step_app_1">在 NotiSync iOS 中開啟「設定」，點選「Android 藍牙橋接」，然後選擇這部 Android 裝置。</string>
+    <string name="ios_setup_step_app_2">在 iPhone 上接受藍牙配對要求並允許分享系統通知。</string>
+    <string name="ios_setup_step_app_3">在 Android 上允許裝置存取；如有提示，請確認您的 iPhone。</string>
+    <string name="ios_app_setup_ready">已透過 NotiSync iOS 連線。確認後即可使用此 iPhone 橋接通知。</string>
+    <string name="ios_app_setup_confirm">使用 %1$s 橋接通知</string>
+    <string name="ios_pairing_try_live">請重新連接 iPhone 並再次開啟此頁面，以重試存取要求。</string>
+    <string name="ios_pairing_choose_connected">選擇已連線的 iPhone</string>
+    <string name="ios_pairing_choose_connected_body">多個 Bluetooth LE 裝置同時連線，請選擇您的 iPhone 以繼續。</string>
+    <string name="ios_pairing_in_progress_help">核對兩部裝置上的藍牙配對碼，然後在 iPhone 上點選「允許」以分享系統通知。</string>
+    <string name="ios_pairing_connecting_help">正在連線至您的 iPhone 並檢查通知分享狀態…</string>
+    <string name="ios_no_ancs_help">在 iPhone 的「設定」中開啟「藍牙」，點選這部 Android 裝置旁的資訊按鈕，並開啟「分享系統通知」。</string>
+    <string name="ios_pairing_waiting_bluetooth">請先在上方開啟藍牙，以查看設定步驟並開始配對。</string>
+    <string name="ios_pairing_error_hint">請檢查「附近的裝置」權限與藍牙設定，然後將橋接關閉後重新開啟。</string>
+    <string name="ios_pairing_retry_sharing">重試通知共享</string>
+    <string name="ios_pairing_bond_lost">此裝置已取消配對。</string>
     <string name="ios_pairing_forget">取消配對</string>
-    <string name="ios_pairing_unavailable">此裝置不支援配對</string>
-    <string name="ios_pairing_open_bt">請開啟 iPhone 的藍牙設定，讓此裝置能找到它</string>
-    <string name="ios_pairing_accept_prompt">請在兩部裝置上接受配對要求</string>
     <string name="ios_pairing_forget_prompt">該裝置可能仍處於配對狀態，您可以在藍牙設定中解除配對。</string>
-    <string name="ios_pairing_failed">無法開始配對：%1$s</string>
     <string name="ios_bluetooth_permission_required">需要「附近的裝置」權限才能與 iPhone 配對並接收其通知。</string>
     <string name="ios_show_here">鏡像到此裝置</string>
     <string name="ios_mirror_mesh">鏡像到我的其他裝置</string>
@@ -981,9 +1000,19 @@
     <string name="ios_status_sharing">正在分享通知</string>
     <string name="ios_status_no_ancs">已連線，但未分享通知</string>
     <string name="ios_status_error">藍牙權限或硬體錯誤</string>
+    <string name="ios_status_bluetooth_off">藍牙已關閉</string>
+    <string name="ios_bluetooth_off_help">開啟這部 Android 裝置的藍牙以連接您的 iPhone。</string>
+    <string name="ios_open_bluetooth_settings">開啟藍牙設定</string>
 
     <!-- ANCS foreground service -->
     <string name="ancs_service_channel">iPhone 橋接</string>
+    <string name="ios_bridge_alert_channel">iPhone 橋接提醒</string>
+    <string name="ios_native_warning_title">使用藍牙設定進行配對？</string>
+    <string name="ios_native_warning_message">讓 iPhone 找到這部手機時，手機的藍牙可能會重新啟動，使其他藍牙裝置中斷連線。</string>
+    <string name="ios_bridge_fallback_title">iPhone 配對方式已變更</string>
+    <string name="ios_bridge_fallback_message">由於藍牙多次停止運作，已改用 NotiSync iOS 建立連線。</string>
+    <string name="ios_bridge_disabled_title">iPhone 藍牙橋接已關閉</string>
+    <string name="ios_bridge_disabled_message">NotiSync 嘗試讓 iPhone 找到這部手機時，藍牙多次停止運作。</string>
     <string name="ancs_service_title">正在橋接 iPhone 通知</string>
 
     <!-- Onboarding (first launch) -->
@@ -1004,7 +1033,8 @@
     <string name="onboarding_apps_body">啟用應用程式的鏡像功能前，不會鏡像任何通知。完成設定後，請開啟「應用程式」分頁，啟用您想鏡像的應用程式。</string>
     <string name="onboarding_iphone_title">新增您的 iPhone</string>
     <string name="onboarding_iphone_body">透過藍牙配對 iPhone 後，這部手機即可擷取其通知並鏡像到您的其他裝置。您也可以稍後在「iPhone」分頁中設定。</string>
-    <string name="onboarding_iphone_pair">配對 iPhone</string>
+    <string name="onboarding_iphone_enable">啟用 iPhone 橋接</string>
+    <string name="onboarding_iphone_later">稍後設定</string>
     <string name="onboarding_pair_title">連線您的其他裝置</string>
     <string name="onboarding_pair_body">在您的其他裝置上安裝 NotiSync，然後在「裝置」分頁中配對。</string>
     <string name="device_capability_ssh_key_provider">SSH 金鑰提供程式</string>

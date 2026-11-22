@@ -1013,16 +1013,35 @@
     <string name="ios_bridge_card_title">iPhone over Bluetooth</string>
     <string name="ios_connected_device">Connected to %1$s</string>
     <string name="ios_pairing_title">Pair your iPhone</string>
+    <string name="ios_pairing_title_paired">Paired iPhone</string>
     <string name="ios_pairing_off">Pair your iPhone via Bluetooth to access its notifications.</string>
     <string name="ios_pairing_on">Paired with %1$s</string>
     <string name="ios_pairing_on_unknown">Paired</string>
-    <string name="ios_pairing_setup">Pair</string>
+    <string name="ios_pairing_needs_enrollment">%1$s · Pairing required</string>
+    <string name="ios_pairing_needs_enrollment_unknown">Pairing required</string>
+    <string name="ios_pairing_start">Pair</string>
+    <string name="ios_setup_mode_bluetooth">Bluetooth Settings</string>
+    <string name="ios_setup_mode_app">NotiSync iOS App</string>
+    <string name="ios_setup_step_bluetooth_1">On your iPhone, open Bluetooth in Settings and tap this Android device under Other Devices.</string>
+    <string name="ios_setup_step_bluetooth_2">Approve device access on Android when prompted.</string>
+    <string name="ios_setup_step_bluetooth_3">Confirm the pairing code on both devices and allow Share System Notifications on your iPhone.</string>
+    <string name="ios_setup_step_app_1">In the NotiSync iOS App, open Settings, tap Android Bluetooth Bridge, and select this Android device.</string>
+    <string name="ios_setup_step_app_2">Accept the Bluetooth pairing request and allow Share System Notifications on your iPhone.</string>
+    <string name="ios_setup_step_app_3">Approve device access on Android and confirm your iPhone if prompted.</string>
+    <string name="ios_app_setup_ready">Connected from the NotiSync iOS App. Confirm to use this iPhone for the bridge.</string>
+    <string name="ios_app_setup_confirm">Use %1$s for the bridge</string>
+    <string name="ios_pairing_try_live">Reconnect the iPhone and reopen this screen to retry the access request.</string>
+    <string name="ios_pairing_choose_connected">Choose the connected iPhone</string>
+    <string name="ios_pairing_choose_connected_body">Multiple Bluetooth LE devices connected at once. Select your iPhone to continue.</string>
+    <string name="ios_pairing_in_progress_help">Confirm that the Bluetooth pairing code matches on both devices, then tap Allow on your iPhone to share system notifications.</string>
+    <string name="ios_pairing_connecting_help">Connecting to your iPhone and checking notification sharing…</string>
+    <string name="ios_no_ancs_help">On your iPhone, open Bluetooth in Settings, tap the info button next to this Android device, and turn on Share System Notifications.</string>
+    <string name="ios_pairing_waiting_bluetooth">Turn on Bluetooth above to view setup steps and start pairing.</string>
+    <string name="ios_pairing_error_hint">Check Nearby devices permission and Bluetooth settings, then turn the bridge off and back on.</string>
+    <string name="ios_pairing_retry_sharing">Retry notification sharing</string>
+    <string name="ios_pairing_bond_lost">This device is no longer paired.</string>
     <string name="ios_pairing_forget">Forget</string>
-    <string name="ios_pairing_unavailable">Pairing isn\'t available on this device</string>
-    <string name="ios_pairing_open_bt">Open your iPhone\'s Bluetooth Settings to allow discovery</string>
-    <string name="ios_pairing_accept_prompt">Accept the pairing request on both devices</string>
     <string name="ios_pairing_forget_prompt">The device may still be paired. You can unpair them in the Bluetooth settings.</string>
-    <string name="ios_pairing_failed">Couldn\'t start pairing: %1$s</string>
     <string name="ios_bluetooth_permission_required">Nearby devices permission is required to pair with and receive notifications from an iPhone.</string>
     <string name="ios_show_here">Mirror to this phone</string>
     <string name="ios_mirror_mesh">Mirror to my other devices</string>
@@ -1041,9 +1060,19 @@
     <string name="ios_status_sharing">Sharing notifications</string>
     <string name="ios_status_no_ancs">Connected, but notifications aren\'t shared</string>
     <string name="ios_status_error">Bluetooth permission or hardware error</string>
+    <string name="ios_status_bluetooth_off">Bluetooth is turned off</string>
+    <string name="ios_bluetooth_off_help">Turn on Bluetooth on this Android device to connect with your iPhone.</string>
+    <string name="ios_open_bluetooth_settings">Open Bluetooth settings</string>
 
     <!-- ANCS foreground service -->
     <string name="ancs_service_channel">iPhone bridge</string>
+    <string name="ios_bridge_alert_channel">iPhone bridge alerts</string>
+    <string name="ios_native_warning_title">Use Bluetooth Settings for setup?</string>
+    <string name="ios_native_warning_message">Bluetooth may restart on this phone when it advertises to the iPhone. This can disconnect other Bluetooth devices.</string>
+    <string name="ios_bridge_fallback_title">iPhone setup method changed</string>
+    <string name="ios_bridge_fallback_message">Bluetooth stopped several times, so NotiSync switched to the NotiSync iOS App to connect.</string>
+    <string name="ios_bridge_disabled_title">iPhone Bluetooth bridge turned off</string>
+    <string name="ios_bridge_disabled_message">Bluetooth repeatedly stopped when NotiSync tried to make this phone discoverable.</string>
     <string name="ancs_service_title">Bridging iPhone notifications</string>
 
     <!-- Onboarding (first launch) -->
@@ -1064,7 +1093,8 @@
     <string name="onboarding_apps_body">Nothing is mirrored until you turn apps on. Once you finish setup, open the Apps tab and turn on the apps you want to mirror.</string>
     <string name="onboarding_iphone_title">Add your iPhone</string>
     <string name="onboarding_iphone_body">Pair an iPhone over Bluetooth and this phone can capture its notifications and mirror them to your other devices. You can also set this up later from the iPhone tab.</string>
-    <string name="onboarding_iphone_pair">Pair iPhone</string>
+    <string name="onboarding_iphone_enable">Enable iPhone bridge</string>
+    <string name="onboarding_iphone_later">Set up later</string>
     <string name="onboarding_pair_title">Connect your other devices</string>
     <string name="onboarding_pair_body">Install NotiSync on your other devices, then pair them from the Devices tab.</string>
     <string name="device_capability_ssh_key_provider">SSH Key Provider</string>

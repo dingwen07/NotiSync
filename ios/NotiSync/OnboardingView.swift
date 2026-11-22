@@ -81,9 +81,9 @@ struct OnboardingView: View {
 
     private var welcomePage: some View {
         OnboardingPage(
-            icon: "iphone.gen3.radiowaves.left.and.right",
+            icon: HostFormFactor.current.devicesSymbolName,
             title: "Welcome to NotiSync",
-            message: "See notifications from your other devices on this iPhone — private and end-to-end encrypted."
+            message: "See notifications from your other devices on this \(HostFormFactor.current.displayName) — private and end-to-end encrypted."
         ) {
             EmptyView()
         } actions: {
@@ -96,7 +96,7 @@ struct OnboardingView: View {
         OnboardingPage(
             icon: "bell.badge",
             title: "Show Notifications Here",
-            message: "NotiSync needs permission to show notifications from your other devices on this iPhone."
+            message: "NotiSync needs permission to show notifications from your other devices on this \(HostFormFactor.current.displayName)."
         ) {
             if permissionGranted {
                 statusLabel("Notifications are on.", systemImage: "checkmark.circle.fill")

@@ -11,25 +11,32 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.TextObfuscationMode
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyPreview
@@ -57,7 +64,7 @@ internal fun SshKeyImportSheet(
     encrypted: Boolean,
     preview: SshKeyPreview?,
     name: String,
-    passphrase: String,
+    passphrase: TextFieldState,
     storage: SshKeyStorageSelection,
     error: String?,
     previewing: Boolean,
@@ -65,7 +72,7 @@ internal fun SshKeyImportSheet(
     onPrivateKeyTextChange: (String) -> Unit,
     onPaste: () -> Unit,
     onNameChange: (String) -> Unit,
-    onPassphraseChange: (String) -> Unit,
+    onPassphraseChange: () -> Unit,
     onStorageChange: (SshKeyStorageSelection) -> Unit,
     onContinueClipboard: () -> Unit,
     onPreview: () -> Unit,
@@ -74,6 +81,12 @@ internal fun SshKeyImportSheet(
 ) {
     val step = sshKeyImportSheetStep(privateKeyText, encrypted, preview)
     val busy = previewing || importing
+    if (step == SshKeyImportSheetStep.PASSPHRASE) {
+        val onChange by rememberUpdatedState(onPassphraseChange)
+        LaunchedEffect(passphrase) {
+            snapshotFlow { passphrase.text.toString() }.drop(1).collect { onChange() }
+        }
+    }
     // The form must keep its editor and actions reachable after recreation in short windows.
     val sheetState = rememberBottomSheetState(
         initialValue = SheetValue.Hidden,
@@ -139,12 +152,10 @@ internal fun SshKeyImportSheet(
                             )
                         }
                         item {
-                            OutlinedTextField(
-                                value = passphrase,
-                                onValueChange = onPassphraseChange,
+                            OutlinedSecureTextField(
+                                state = passphrase,
                                 label = { Text(androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_passphrase)) },
-                                singleLine = true,
-                                visualTransformation = PasswordVisualTransformation(),
+                                textObfuscationMode = TextObfuscationMode.Hidden,
                                 keyboardOptions = KeyboardOptions(
                                     autoCorrectEnabled = false,
                                     keyboardType = KeyboardType.Password,
@@ -212,7 +223,7 @@ internal fun SshKeyImportSheet(
                     },
                     enabled = !busy && when (step) {
                         SshKeyImportSheetStep.CLIPBOARD -> !privateKeyText.isNullOrBlank()
-                        SshKeyImportSheetStep.PASSPHRASE -> passphrase.isNotBlank()
+                        SshKeyImportSheetStep.PASSPHRASE -> passphrase.text.isNotBlank()
                         SshKeyImportSheetStep.REVIEW -> name.isNotBlank() && preview != null
                     },
                 ) {

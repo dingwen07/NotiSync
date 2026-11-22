@@ -27,6 +27,12 @@ internal object AppMenuShortcuts {
         return destination
     }
 
+    fun intentFor(context: Context, destination: MenuDestination): Intent =
+        Intent(context, MainActivity::class.java)
+            .setAction(ACTION)
+            .putExtra(EXTRA_DESTINATION, destination.id)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
     /** Caller runs off-main. Touch only menu IDs; notification conversation shortcuts have their own lifecycle. */
     @Synchronized
     fun update(context: Context, configuration: MenuConfiguration) {
@@ -50,10 +56,7 @@ internal object AppMenuShortcuts {
                 .setShortLabel(context.getString(destination.label))
                 .setIcon(IconCompat.createWithResource(context, destination.shortcutIcon(homePackage)))
                 .setRank(rank)
-                .setIntent(Intent(context, MainActivity::class.java)
-                    .setAction(ACTION)
-                    .putExtra(EXTRA_DESTINATION, destination.id)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                .setIntent(intentFor(context, destination))
                 .build()
         }
         if (shortcuts.isNotEmpty()) check(ShortcutManagerCompat.addDynamicShortcuts(context, shortcuts)) {

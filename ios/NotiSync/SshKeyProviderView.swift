@@ -1106,7 +1106,7 @@ private struct SshProcessLineageView: View {
 private struct SshGenerateKeyView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
-    @State private var name = String(localized: "iPhone SSH Key")
+    @State private var name = String(localized: "\(HostFormFactor.current.displayName) SSH Key")
     @State private var algorithm = SshManagedGenerationAlgorithm.p256
     @State private var rsaBits = 3072
     @State private var busy = false

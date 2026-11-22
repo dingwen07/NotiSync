@@ -251,6 +251,7 @@ final class NotificationService: UNNotificationServiceExtension {
                     return
                 }
                 perfStyle = n.style.rawValue
+                NotificationFilterStore.recordOrigin(of: n)
                 let filterAlert = NotificationFilterStore.shouldFilterNotification(n)
                 let pair = DismissedSourcePair(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
                 // A tombstoned mirror — dismissed at the source before this copy got here — must still

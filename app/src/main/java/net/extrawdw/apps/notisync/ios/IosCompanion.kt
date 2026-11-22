@@ -3,19 +3,26 @@ package net.extrawdw.apps.notisync.ios
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.ScanResult
+import android.bluetooth.BluetoothProfile
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Context
-import android.content.Intent
+import android.os.Build
 import android.util.Log
-import java.util.regex.Pattern
+import androidx.core.content.edit
+import java.util.Locale
+
+/** A dual-mode device can have a Classic link key and still need to pair for ANCS. */
+@SuppressLint("MissingPermission")
+internal fun BluetoothDevice.hasBridgeBond(): Boolean = if (Build.VERSION.SDK_INT >= 37) {
+    getBondStatus(BluetoothDevice.TRANSPORT_LE) != null
+} else bondState == BluetoothDevice.BOND_BONDED
 
 /**
  * CompanionDeviceManager (CDM) glue for **background reliability**. After the user creates a one-time
- * association (a system device picker) and we observe device presence, the OS wakes [IosCompanionService]
+ * association (a system access prompt) and we observe device presence, the OS wakes [IosCompanionService]
  * whenever the iPhone comes into BLE range — which (re)starts [IosBridgeService] so notifications keep
  * flowing even when NotiSync isn't open. The foreground-service path works without this; CDM is additive.
  *
@@ -27,120 +34,117 @@ object IosCompanion {
     fun manager(context: Context): CompanionDeviceManager? =
         runCatching { context.getSystemService(CompanionDeviceManager::class.java) }.getOrNull()
 
-    /** Whether this app already holds a CDM association (drives the iOS tab's pairing state). */
-    @SuppressLint("MissingPermission")
-    fun isAssociated(context: Context): Boolean =
-        runCatching { manager(context)?.myAssociations?.isNotEmpty() == true }.getOrDefault(false)
+    private const val PEER_PREFS = "notisync_ios_bridge"
+    private const val ADDRESS = "selected_address"
+    private const val ASSOCIATION = "selected_association"
 
-    /**
-     * Name of the (first) associated iPhone for the pairing card — the name the user picked in the CDM picker
-     * ([AssociationInfo.getDisplayName]), e.g. "John's iPhone". Falls back to the bonded device's name when CDM
-     * didn't persist a display name. Null when there's no association or no resolvable name.
-     */
-    @SuppressLint("MissingPermission")
-    fun associatedDeviceName(context: Context): String? = runCatching {
-        val info = manager(context)?.myAssociations?.firstOrNull()
-        info?.displayName?.toString()?.takeIf { it.isNotBlank() }
-            ?: info?.deviceMacAddress?.toString()?.uppercase()?.let { mac ->
-                context.getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(mac)?.name
-            }?.takeIf { it.isNotBlank() }
-    }.getOrNull()
+    private fun prefs(context: Context) = context.createDeviceProtectedStorageContext()
+        .getSharedPreferences(PEER_PREFS, Context.MODE_PRIVATE)
 
-    /**
-     * The association request. Uses the **classic** [BluetoothDeviceFilter] (BR/EDR inquiry), NOT the BLE one:
-     * iOS does not put a local name in its BLE advertisements, so a BluetoothLeDeviceFilter name pattern matches
-     * the (empty) advertised name and the iPhone never appears. Classic inquiry actively fetches the device name,
-     * so the iPhone surfaces as "<name>'s iPhone".
-     *
-     * That is also why there is no manufacturer-data / ScanFilter option here: a BLE ScanFilter reads
-     * advertisement fields that classic inquiry doesn't have. And ANCS itself is a BLE GATT service, absent from
-     * the classic SDP record, so an addServiceUuid filter can't match it either — leaving the name as the one
-     * usable discriminator.
-     *
-     * The pattern requires a **non-empty name** (`.+`): that drops the bare-MAC noise (unnamed devices can't be
-     * recognised or picked) while still matching an iPhone renamed away from "iPhone".
-     */
-    fun request(): AssociationRequest {
-        val filter = BluetoothDeviceFilter.Builder().setNamePattern(Pattern.compile(".+")).build()
-        return AssociationRequest.Builder()
-            .addDeviceFilter(filter)
-            .setSingleDevice(false)
-            .build()
+    internal fun setupPreferences(context: Context) = IphoneSetupPreferences(
+        prefs(context), IphoneAppSetup.prefersAppSetup(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.SOC_MANUFACTURER),
+    )
+
+    private fun AssociationInfo.peer(): IosPeerSelection? =
+        deviceMacAddress?.toString()?.uppercase(Locale.ROOT)?.let { IosPeerSelection(it, id) }
+
+    internal fun selectedPeer(context: Context): IosPeerSelection? {
+        val prefs = prefs(context)
+        val saved = prefs.getString(ADDRESS, null)?.takeIf { it.isNotEmpty() }?.let {
+            IosPeerSelection(it, prefs.getInt(ASSOCIATION, -1).takeIf { id -> id != -1 })
+        }
+        val explicit = prefs.contains(ADDRESS)
+        if (explicit && saved?.associationId == null) return saved
+        val associations = runCatching { manager(context)?.myAssociations }.getOrNull().orEmpty()
+        return IosPeerSelection.resolve(saved, explicit, associations.mapNotNull { it.peer() })
     }
 
-    /**
-     * The BluetoothDevice the user picked, from the CDM picker result — handles both the API-33+
-     * AssociationInfo extra and the legacy device / scan-result extra.
-     */
-    @Suppress("DEPRECATION") // EXTRA_DEVICE deprecated in 33; kept as a fallback when EXTRA_ASSOCIATION's associatedDevice is absent
-    fun deviceFromPickerResult(intent: Intent?): BluetoothDevice? {
-        if (intent == null) return null
-        runCatching {
-            intent.getParcelableExtra(
-                CompanionDeviceManager.EXTRA_ASSOCIATION,
-                AssociationInfo::class.java
-            )
-                ?.associatedDevice?.bluetoothDevice
-        }.getOrNull()?.let { return it }
-        runCatching {
-            intent.getParcelableExtra(
-                CompanionDeviceManager.EXTRA_DEVICE,
-                BluetoothDevice::class.java
-            )
-        }
-            .getOrNull()?.let { return it }
-        runCatching {
-            intent.getParcelableExtra(
-                CompanionDeviceManager.EXTRA_DEVICE,
-                ScanResult::class.java
-            )?.device
-        }
-            .getOrNull()?.let { return it }
-        return null
-    }
-
-    /**
-     * Bond (pair) with [device] **from the Android side**, so the user doesn't have to pair via iOS Settings →
-     * Bluetooth. The iPhone shows a pairing prompt; accepting it (with our ANCS solicitation already on air)
-     * yields the encrypted link + "Share System Notifications". Association alone does NOT pair — this does.
-     *
-     * @return whether a system pairing confirmation is already pending or was successfully requested.
-     */
-    @SuppressLint("MissingPermission") // guarded below; SecurityException also handles revocation races
-    fun bondDevice(context: Context, device: BluetoothDevice?): Boolean {
-        device ?: run { Log.w(TAG, "no device to bond from CDM picker"); return false }
-        if (!IosBluetoothPermissions.canConnect(context)) {
-            Log.w(TAG, "cannot bond device: BLUETOOTH_CONNECT is not granted")
-            return false
-        }
-        return try {
-            when (device.bondState) {
-                BluetoothDevice.BOND_BONDED -> false
-                BluetoothDevice.BOND_BONDING -> true
-                else -> {
-                    Log.i(TAG, "CDM: initiating bond with ${device.address}")
-                    device.createBond().also { started ->
-                        if (!started) Log.w(TAG, "createBond returned false")
-                    }
-                }
+    private fun savePeer(context: Context, peer: IosPeerSelection?) {
+        // An empty address records an explicit Forget, even if the system still lists the old association.
+        prefs(context).edit {
+            if (prefs(context).getString("name_address", null) != peer?.address) {
+                remove("name_address")
+                remove("gap_name")
             }
-        } catch (error: SecurityException) {
-            // Runtime permissions can change while the system-owned CDM picker is in front of the app.
-            Log.w(TAG, "cannot bond device: BLUETOOTH_CONNECT was revoked", error)
-            false
-        } catch (error: RuntimeException) {
-            // Bluetooth is optional to the rest of NotiSync; a stack/service failure must not crash the app.
-            Log.w(TAG, "bond request failed", error)
-            false
+            putString(ADDRESS, peer?.address.orEmpty())
+            putInt(ASSOCIATION, peer?.associationId ?: -1)
         }
     }
 
-    /** (Re)arm presence observation for every association so [IosCompanionService.onDeviceAppeared] fires.
-     *  Safe to call repeatedly (e.g. on every bridge start, to survive reboots). No-op if not associated. */
+    fun selectAssociation(context: Context, info: AssociationInfo) {
+        val peer = info.peer() ?: return
+        // Both CDM callbacks can deliver the same selection. Preserve any confirmed BLE address for it.
+        if (prefs(context).getInt(ASSOCIATION, -1) != info.id) savePeer(context, peer)
+    }
+
+    data class Peer(
+        val address: String,
+        val name: String?,
+        val newServerLinkAt: Long? = null,
+    )
+
+    @SuppressLint("MissingPermission")
+    internal fun needsLeEnrollment(context: Context, peer: IosPeerSelection?): Boolean {
+        if (peer == null) return true
+        return runCatching {
+            context.getSystemService(BluetoothManager::class.java)?.adapter
+                ?.getRemoteDevice(peer.address)?.hasBridgeBond() == false
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission")
+    internal fun connectedGattDevices(manager: BluetoothManager): List<BluetoothDevice> =
+        listOf(BluetoothProfile.GATT_SERVER, BluetoothProfile.GATT).flatMap { profile ->
+            runCatching { manager.getConnectedDevices(profile) }.getOrDefault(emptyList())
+        }.distinctBy { it.address }
+
+    internal fun hasAssociation(context: Context, address: String, selected: IosPeerSelection?): Boolean {
+        val id = selected?.associationId ?: return false
+        return runCatching { manager(context)?.myAssociations?.any {
+            it.id == id && address.equals(it.deviceMacAddress?.toString(), ignoreCase = true)
+        } == true }.getOrDefault(false)
+    }
+
+    internal fun saveConfirmedAddress(context: Context, address: String) {
+        savePeer(context, IosPeerSelection(address, selectedPeer(context)?.associationId))
+    }
+
+    internal fun saveGapName(context: Context, address: String, name: String) {
+        prefs(context).edit {
+            putString("name_address", address)
+            putString("gap_name", name)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    internal fun selectedDeviceName(context: Context, peer: IosPeerSelection?): String? {
+        peer ?: return null
+        val prefs = prefs(context)
+        val device = runCatching { context.getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(peer.address) }.getOrNull()
+        val alias = runCatching { device?.alias }.getOrNull()
+        val name = runCatching { device?.name }.getOrNull()
+        val gap = prefs.getString("gap_name", null).takeIf { prefs.getString("name_address", null) == peer.address }
+        val association = peer.associationId?.let { id -> runCatching {
+            manager(context)?.myAssociations?.find { it.id == id }?.displayName?.toString()
+        }.getOrNull() }
+        // getAlias() returns the cached Bluetooth name too when the user hasn't set a local alias.
+        return listOf(alias.takeIf { it != name }, gap, name, association).firstOrNull {
+            !it.isNullOrBlank() && !it.equals(peer.address, ignoreCase = true)
+        }
+    }
+
+    /** Pixel CDM also checks already-connected GATT peers for this exact-address request. */
+    fun request(address: String): AssociationRequest = AssociationRequest.Builder()
+        .addDeviceFilter(BluetoothDeviceFilter.Builder().setAddress(address).build())
+        .setSingleDevice(true)
+        .build()
+
+    /** Re-arm presence for the selected phone after setup or a bridge restart. */
     @SuppressLint("MissingPermission")
     fun observePresence(context: Context) {
+        val selectedId = selectedPeer(context)?.associationId ?: return
         val cdm = manager(context) ?: return
-        runCatching { cdm.myAssociations }.getOrNull()?.forEach { info ->
+        runCatching { cdm.myAssociations.find { it.id == selectedId } }.getOrNull()?.let { info ->
             runCatching { observe(cdm, info) }.onFailure {
                 Log.w(
                     TAG,
@@ -167,9 +171,10 @@ object IosCompanion {
         }
     }
 
-    /** Remove every association (and stop observing it) so the user can re-run "Set up". */
+    /** Remove every association (and stop observing it) and the selected Bluetooth address, so the user can re-run "Set up". */
     @SuppressLint("MissingPermission")
     fun disassociateAll(context: Context) {
+        savePeer(context, null)
         val cdm = manager(context) ?: return
         runCatching { cdm.myAssociations }.getOrNull()?.forEach { info ->
             runCatching { info.deviceMacAddress?.toString()?.let { stopObserving(cdm, it) } }

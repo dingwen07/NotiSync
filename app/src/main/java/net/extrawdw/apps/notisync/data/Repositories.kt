@@ -1,5 +1,7 @@
 package net.extrawdw.apps.notisync.data
 
+import android.content.Context
+import android.provider.Settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -30,6 +32,7 @@ class SettingsRepository internal constructor(
     private val store: DataStore<Preferences>,
     private val scope: CoroutineScope,
     private val operationalState: OperationalApplicationState,
+    private val defaultDeviceName: String = android.os.Build.MODEL.orEmpty(),
 ) {
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
@@ -82,8 +85,8 @@ class SettingsRepository internal constructor(
         store.data.map { upgradeLegacyDefaultBrokerUrl(it[brokerUrlKey] ?: DEFAULT_BROKER) }
             .stateInEager(scope, initialBrokerUrl)
     val deviceName: StateFlow<String> =
-        store.data.map { it[deviceNameKey] ?: android.os.Build.MODEL }
-            .stateInEager(scope, android.os.Build.MODEL)
+        store.data.map { it[deviceNameKey] ?: defaultDeviceName }
+            .stateInEager(scope, initialPreferences[deviceNameKey] ?: defaultDeviceName)
 
     /** Source-clock stamp of the last device-name change; 0 until the user first renames. Stamped into
      *  outgoing [ProfileUpdate]s so peers can apply last-writer-wins. */
@@ -534,3 +537,14 @@ class ActivityLog {
         private const val MAX = 100
     }
 }
+
+internal fun defaultDeviceName(context: Context): String = resolveDefaultDeviceName(
+    globalDeviceName = runCatching {
+        Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+    }.getOrNull(),
+)
+
+internal fun resolveDefaultDeviceName(
+    globalDeviceName: String?,
+    buildModel: String = android.os.Build.MODEL.orEmpty(),
+): String = globalDeviceName?.trim()?.takeIf { it.isNotEmpty() } ?: buildModel.trim()

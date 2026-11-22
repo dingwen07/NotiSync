@@ -79,19 +79,6 @@ extension NotiSyncRuntime {
         notificationFiltersDidChange()
     }
 
-    func iosDevices() -> [FilteredIosDeviceRecord] {
-        _ = notificationFilterRevision
-        return NotificationFilterStore.iosDevices()
-    }
-
-    func recordIosDevice(peerClientId: String, originDeviceId: String?, deviceName: String?) {
-        NotificationFilterStore.recordIosDevice(
-            peerClientId: peerClientId,
-            originDeviceId: originDeviceId,
-            deviceName: deviceName)
-        bumpNotificationFilterRevision()
-    }
-
     func removeIosDevice(deviceKey: String) {
         NotificationFilterStore.removeIosDevice(deviceKey: deviceKey)
         // Removing a device clears its filters too — announce so the source peer drops them (a clearing FILTER).
@@ -104,12 +91,7 @@ extension NotiSyncRuntime {
     }
 
     func setIosNotificationsEnabled(_ enabled: Bool, device: FilteredIosDeviceRecord) {
-        NotificationFilterStore.setIosNotificationsEnabled(
-            enabled,
-            deviceKey: device.deviceKey,
-            peerClientId: device.peerClientId,
-            originDeviceId: device.originDeviceId,
-            deviceName: device.deviceName)
+        NotificationFilterStore.setIosNotificationsEnabled(enabled, device: device)
         notificationFiltersDidChange()
     }
 
@@ -154,22 +136,7 @@ extension NotiSyncRuntime {
         case .ANDROID_LOCAL:
             setAndroidLocalNotificationsEnabled(false, for: notification.sourceClientId)
         case .IOS_ANCS:
-            let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) ?? "iOS Device"
-            recordIosDevice(peerClientId: notification.sourceClientId, originDeviceId: notification.originDeviceId, deviceName: name)
-            if let deviceKey = filterDeviceKey(for: notification) {
-                let device = FilteredIosDeviceRecord(
-                    peerClientId: notification.sourceClientId,
-                    originDeviceId: notification.originDeviceId,
-                    deviceName: name,
-                    updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
-                NotificationFilterStore.setIosNotificationsEnabled(
-                    false,
-                    deviceKey: deviceKey,
-                    peerClientId: device.peerClientId,
-                    originDeviceId: device.originDeviceId,
-                    deviceName: device.deviceName)
-                notificationFiltersDidChange()
-            }
+            if let device = FilteredIosDeviceRecord(notification) { setIosNotificationsEnabled(false, device: device) }
         }
     }
 
@@ -203,15 +170,7 @@ extension NotiSyncRuntime {
         case .ANDROID_LOCAL:
             setAndroidLocalNotificationsEnabled(true, for: notification.sourceClientId)
         case .IOS_ANCS:
-            guard let deviceKey = filterDeviceKey(for: notification) else { return }
-            let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) ?? "iOS Device"
-            NotificationFilterStore.setIosNotificationsEnabled(
-                true,
-                deviceKey: deviceKey,
-                peerClientId: notification.sourceClientId,
-                originDeviceId: notification.originDeviceId,
-                deviceName: name)
-            notificationFiltersDidChange()
+            if let device = FilteredIosDeviceRecord(notification) { setIosNotificationsEnabled(true, device: device) }
         }
     }
 
@@ -647,5 +606,15 @@ extension NotiSyncRuntime {
         guard let modelContext else { return nil }
         return try? modelContext.fetch(FetchDescriptor<TrustedDevice>(
             predicate: #Predicate { $0.clientId == clientId })).first
+    }
+}
+
+@MainActor
+extension FilteredIosDeviceRecord {
+    init?(_ notification: InboxNotification) {
+        self.init(peerClientId: notification.sourceClientId, originDeviceId: notification.originDeviceId,
+                  deviceName: notification.originDeviceName,
+                  postTime: Int64((notification.postTime.timeIntervalSince1970 * 1000).rounded()),
+                  receivedAt: Int64((notification.receivedAt.timeIntervalSince1970 * 1000).rounded()))
     }
 }

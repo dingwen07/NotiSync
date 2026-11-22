@@ -186,7 +186,8 @@ extension NotiSyncRuntime {
         // If the NSE (or an earlier path) already delivered this message, reflect ITS delivery mode in the
         // Inbox rather than the later drain/WS, and don't post a duplicate banner.
         let prior = await Task.detached(priority: .userInitiated) {
-            MirrorMapStore.entries(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
+            NotificationFilterStore.recordOrigin(of: n)
+            return MirrorMapStore.entries(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
                 .first { $0.messageId == messageId }
         }.value
         let displayMode = prior?.deliveryMode ?? mode.rawValue
@@ -207,8 +208,7 @@ extension NotiSyncRuntime {
             return
         }
         guard prior == nil else { span.attribute("result", "duplicate"); return }
-        // Filter check + category registration touch App Group files (the iOS-origin path even writes the
-        // bridged-device record) — off the main actor.
+        // Read shared filter preferences off the main actor.
         let filtered = await Task.detached(priority: .userInitiated) {
             NotificationFilterStore.shouldFilterNotification(n)
         }.value

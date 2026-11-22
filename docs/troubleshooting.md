@@ -12,8 +12,8 @@ Check the sending device first, then the recipient and broker:
    may leave the other device pending.
 3. Confirm the recipient has permission to display notifications and that its device/app filters
    allow the notification.
-4. For an iPhone Bluetooth source, keep the Android bridge nearby and check Bluetooth notification
-   sharing. The iOS app itself does not capture other apps' notifications.
+4. For an iPhone Bluetooth source, keep the Android bridge nearby and check notification sharing,
+   Focus, and the app selection on the bridge. [iOS bridge troubleshooting](ios-bridge.md#if-something-is-missing)
 5. For a custom broker, check `/healthz` and `/v2/status`. If foreground delivery works but background
    delivery does not, check [FCM/APNs configuration](self-hosting.md), credentials, and app identifiers.
 

@@ -37,6 +37,7 @@ class SettingsRepositoryTest {
     private fun newRepository(
         initialBrokerUrl: String? = null,
         initialOnboardingCompleted: Boolean? = null,
+        defaultDeviceName: String = "Pixel 9",
     ): SettingsRepository {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         val file = File.createTempFile("settings-${System.nanoTime()}", ".preferences_pb")
@@ -50,7 +51,7 @@ class SettingsRepositoryTest {
                 }
             }
         }
-        return SettingsRepository(ds, scope, InMemoryOperationalApplicationState())
+        return SettingsRepository(ds, scope, InMemoryOperationalApplicationState(), defaultDeviceName)
     }
 
     @Test
@@ -143,5 +144,38 @@ class SettingsRepositoryTest {
         assertNull(settings.ensureSelfProfileRevision("name|android|caps-v1", now = 200L))
         assertEquals(200L, settings.ensureSelfProfileRevision("name|android|caps-v2", now = 200L))
         assertEquals(200L, settings.selfProfileUpdatedAt.value)
+    }
+
+    @Test
+    fun resolveDefaultDeviceName_prefersNonBlankGlobalNameAndFallsBackToBuildModel() {
+        assertEquals("Dingwen’s Pixel", resolveDefaultDeviceName("  Dingwen’s Pixel  ", buildModel = "Pixel 9"))
+        assertEquals("Pixel 9", resolveDefaultDeviceName(null, buildModel = " Pixel 9 "))
+        assertEquals("Pixel 9", resolveDefaultDeviceName("   ", buildModel = "Pixel 9"))
+    }
+
+    @Test
+    fun deviceName_usesDefaultUntilExplicitlySavedAndPersistsAcrossReopen() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val file = File.createTempFile("device-name-${System.nanoTime()}", ".preferences_pb")
+            .also { it.delete() }
+        val ds = PreferenceDataStoreFactory.create(scope = scope) { file }
+        val first = SettingsRepository(
+            ds,
+            scope,
+            InMemoryOperationalApplicationState(),
+            defaultDeviceName = "Default Name",
+        )
+        assertEquals("Default Name", first.deviceName.value)
+
+        first.setDeviceName("Custom Phone")
+        assertEquals("Custom Phone", first.deviceName.value)
+
+        val reopened = SettingsRepository(
+            ds,
+            scope,
+            InMemoryOperationalApplicationState(),
+            defaultDeviceName = "Changed System Name",
+        )
+        assertEquals("Custom Phone", reopened.deviceName.value)
     }
 }

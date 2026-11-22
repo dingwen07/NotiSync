@@ -1,9 +1,12 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.app.Application
-import android.companion.AssociationInfo
-import android.companion.CompanionDeviceManager
-import android.content.IntentSender
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -11,11 +14,11 @@ import android.graphics.Paint
 import android.graphics.Path as AndroidPath
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
-import android.util.Log
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -33,17 +37,29 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +71,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
@@ -65,10 +82,13 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
@@ -85,12 +105,16 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.ios.IphoneSetupPreferences
 import net.extrawdw.apps.notisync.ios.IosBridgeService
 import net.extrawdw.apps.notisync.ios.IosBluetoothPermissions
 import net.extrawdw.apps.notisync.ios.IosCompanion
 import net.extrawdw.apps.notisync.ios.IosBridgeStatus
 import net.extrawdw.apps.notisync.ios.IosApp
 import net.extrawdw.apps.notisync.ios.IosBundleIdExclusions
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.refresh as RefreshIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
@@ -298,116 +322,80 @@ fun IosScreen() {
         }
     }
 
-    // --- iPhone pairing via CompanionDeviceManager (one-time association + bond + presence) ---
-    val cdm = remember { context.getSystemService(CompanionDeviceManager::class.java) }
-    var cdmAssociated by remember { mutableStateOf(IosCompanion.isAssociated(context)) }
-    var cdmDeviceName by remember { mutableStateOf(IosCompanion.associatedDeviceName(context)) }
-    val intentSenderLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
-            val picked = IosCompanion.deviceFromPickerResult(result.data)
-            val pairingPromptExpected = IosCompanion.bondDevice(context, picked)
-            cdmAssociated = IosCompanion.isAssociated(context)
-            cdmDeviceName = IosCompanion.associatedDeviceName(context)
-            if (cdmAssociated) {
-                IosCompanion.observePresence(context)
-                graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
-            }
-            // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
-            if (pairingPromptExpected) {
-                Toast.makeText(
-                    context,
-                    resources.getString(R.string.ios_pairing_accept_prompt),
-                    Toast.LENGTH_LONG
-                ).show()
+    val bluetoothAdapter = remember(context) {
+        context.getSystemService(BluetoothManager::class.java)?.adapter
+    }
+    var bluetoothOn by remember { mutableStateOf(bluetoothAdapter?.isEnabled == true) }
+    DisposableEffect(context, bluetoothAdapter) {
+        if (bluetoothAdapter == null) return@DisposableEffect onDispose {}
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                    BluetoothAdapter.STATE_ON -> bluetoothOn = true
+                    BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> bluetoothOn = false
+                }
             }
         }
-
-    fun startPairing() {
-        val mgr = cdm
-        if (mgr == null) {
-            Log.w("IosScreen", "CompanionDeviceManager unavailable")
-            Toast.makeText(
-                context,
-                resources.getString(R.string.ios_pairing_unavailable),
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        Toast.makeText(
+        ContextCompat.registerReceiver(
             context,
-            resources.getString(R.string.ios_pairing_open_bt),
-            Toast.LENGTH_LONG
-        ).show()
-        fun launchPicker(intentSender: IntentSender) {
-            runCatching {
-                intentSenderLauncher.launch(
-                    IntentSenderRequest.Builder(intentSender).build()
-                )
-            }
-                .onFailure { Log.w("IosScreen", "launching CDM picker failed", it) }
-        }
-        runCatching {
-            mgr.associate(
-                IosCompanion.request(),
-                context.mainExecutor,
-                object : CompanionDeviceManager.Callback() {
-                    override fun onAssociationPending(intentSender: IntentSender) {
-                        launchPicker(intentSender)
-                    }
-
-                    @Suppress("OVERRIDE_DEPRECATION") // pre-33 entry point; delegate to the same picker launch
-                    override fun onDeviceFound(intentSender: IntentSender) {
-                        launchPicker(intentSender)
-                    }
-
-                    override fun onAssociationCreated(associationInfo: AssociationInfo) {
-                        Log.i("IosScreen", "CDM association created: ${associationInfo.id}")
-                        cdmAssociated = true
-                        cdmDeviceName = IosCompanion.associatedDeviceName(context)
-                        IosCompanion.observePresence(context)
-                        // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                        IosCompanion.bondDevice(
-                            context,
-                            runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull(),
-                        )
-                        graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
-                    }
-
-                    override fun onFailure(error: CharSequence?) {
-                        Log.w("IosScreen", "CDM association failed: $error")
-                    }
-                })
-        }.onFailure {
-            Log.w("IosScreen", "associate() threw", it)
-            Toast.makeText(
-                context,
-                resources.getString(R.string.ios_pairing_failed, it.message ?: ""),
-                Toast.LENGTH_LONG
-            ).show()
-        }
+            receiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
     }
 
-    val pairingPermissionLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-            if (IosBluetoothPermissions.hasRequired(context)) {
-                startPairing()
-            } else {
-                graph.setIosBridgeEnabled(false)
-                Toast.makeText(
-                    context,
-                    resources.getString(R.string.ios_bluetooth_permission_required),
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
-        }
+    var selectedPeer by remember { mutableStateOf(IosCompanion.selectedPeer(context)) }
+    val setupPeer by graph.iosDeviceRepo.setupPeer.collectAsStateWithLifecycle()
+    val setupPreferences = remember(context) { IosCompanion.setupPreferences(context) }
+    val appSetup by setupPreferences.appModeChanges.collectAsStateWithLifecycle(setupPreferences.usesApp)
+    val pairedName = remember(selectedPeer, deviceName) {
+        IosCompanion.selectedDeviceName(context, selectedPeer) ?: deviceName ?: selectedPeer?.address
+    }
+    fun refreshPeer() {
+        selectedPeer = IosCompanion.selectedPeer(context)
+        graph.iosBridgeManager?.refreshSelection()
+    }
+    val needsEnrollment = remember(selectedPeer, status, bluetoothOn) {
+        IosCompanion.needsLeEnrollment(context, selectedPeer)
+    }
+    IphoneCompanionAccess(
+        enabled = bridgeEnabled && (appSetup || needsEnrollment && status == IosBridgeStatus.ADVERTISING),
+        appSetup = appSetup, selected = selectedPeer,
+        onSelected = ::refreshPeer,
+    )
+    LaunchedEffect(status, deviceName, setupPeer) {
+        selectedPeer = IosCompanion.selectedPeer(context)
+        bluetoothOn = bluetoothAdapter?.isEnabled == true
+    }
 
-    fun requestPairing() {
-        if (IosBluetoothPermissions.hasRequired(context)) {
-            startPairing()
-        } else {
-            pairingPermissionLauncher.launch(IosBluetoothPermissions.requestPermissions())
-        }
+    LifecycleResumeEffect(Unit) {
+        bluetoothOn = bluetoothAdapter?.isEnabled == true
+        refreshPeer()
+        onPauseOrDispose { }
+    }
+
+    val uiState = remember(
+        bridgeEnabled,
+        bluetoothAdapter,
+        bluetoothOn,
+        status,
+        selectedPeer,
+        needsEnrollment,
+        appSetup,
+        setupPeer,
+    ) {
+        resolveIosBridgeUiState(
+            bridgeEnabled = bridgeEnabled,
+            bluetoothAvailable = bluetoothAdapter != null,
+            bluetoothOn = bluetoothOn,
+            status = status,
+            associated = selectedPeer != null,
+            needsEnrollment = needsEnrollment,
+            appSetup = appSetup,
+            hasSetupPeer = setupPeer != null,
+        )
     }
 
     fun norm(s: String) = s.lowercase(Locale.getDefault())
@@ -466,25 +454,43 @@ fun IosScreen() {
             ) {
                 item("connection") {
                     ConnectionCard(
+                        uiState = uiState,
                         status = status,
                         deviceName = deviceName,
                         bridgeEnabled = bridgeEnabled,
+                        onRetrySharing = { graph.iosBridgeManager?.retrySharing() },
+                        onOpenBluetoothSettings = {
+                            runCatching {
+                                context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                            }
+                        },
                         onToggle = { on ->
-                            if (on) enableBridge() else graph.setIosBridgeEnabled(
-                                false
-                            )
+                            if (on) enableBridge() else graph.setIosBridgeEnabled(false)
                         },
                     )
                 }
                 item("pairing") {
                     PairingCard(
-                        associated = cdmAssociated,
-                        pairedName = cdmDeviceName,
-                        onPair = ::requestPairing,
+                        uiState = uiState,
+                        associated = selectedPeer != null,
+                        needsEnrollment = needsEnrollment,
+                        pairedName = pairedName,
+                        appSetup = appSetup,
+                        setupPeer = setupPeer,
+                        onModeChanged = {
+                            if (bridgeEnabled) {
+                                graph.iosBridgeManager?.refreshSelection()
+                            }
+                        },
+                        onConfirmSetup = { peer ->
+                            if (graph.iosBridgeManager?.confirmSetupPeer(peer.address) == true) {
+                                refreshPeer()
+                            } else Toast.makeText(context, resources.getString(R.string.ios_pairing_bond_lost), Toast.LENGTH_LONG).show()
+                        },
+                        onEnableBridge = ::enableBridge,
                         onForget = {
                             IosCompanion.disassociateAll(context)
-                            cdmAssociated = false
-                            cdmDeviceName = null
+                            refreshPeer()
                             Toast.makeText(
                                 context,
                                 resources.getString(R.string.ios_pairing_forget_prompt),
@@ -544,12 +550,120 @@ fun IosScreen() {
     }
 }
 
+internal enum class IosConnectionBannerAction { NONE, RETRY_SHARING, OPEN_BLUETOOTH_SETTINGS }
+
+internal sealed interface IosPairingPresentation {
+    /** Matches the existing "Sharing notifications" flat ListItem row (also used when paired & waiting/off/reconnecting). */
+    data object SettledRow : IosPairingPresentation
+
+    /** BLE peripheral advertising is unsupported by hardware. */
+    data object UnsupportedRow : IosPairingPresentation
+
+    /** Elevated Material 3 setup card for unpaired, unbonded, active bonding, or incoming app-setup confirmation. */
+    data class SetupCard(
+        val body: SetupCardBody,
+        val showBusyIndicator: Boolean,
+        val showModeSelector: Boolean,
+    ) : IosPairingPresentation
+}
+
+internal enum class SetupCardBody {
+    BRIDGE_OFF,
+    WAITING_BLUETOOTH,
+    BRIDGE_ERROR,
+    PAIRING_IN_PROGRESS,
+    CONNECTING,
+    CONFIRM_APP_PEER,
+    METHOD_STEPS,
+}
+
+internal data class IosBridgeUiState(
+    val connectionBannerAction: IosConnectionBannerAction,
+    val showBluetoothOffStatus: Boolean,
+    val showConnectedDeviceName: Boolean,
+    val pairing: IosPairingPresentation,
+)
+
+internal fun resolveIosBridgeUiState(
+    bridgeEnabled: Boolean,
+    bluetoothAvailable: Boolean,
+    bluetoothOn: Boolean,
+    status: IosBridgeStatus,
+    associated: Boolean,
+    needsEnrollment: Boolean,
+    appSetup: Boolean,
+    hasSetupPeer: Boolean,
+): IosBridgeUiState {
+    val bluetoothOff = bridgeEnabled && status == IosBridgeStatus.ERROR && bluetoothAvailable && !bluetoothOn
+    val connectionBannerAction = when {
+        bridgeEnabled && status == IosBridgeStatus.NO_ANCS -> IosConnectionBannerAction.RETRY_SHARING
+        bluetoothOff -> IosConnectionBannerAction.OPEN_BLUETOOTH_SETTINGS
+        else -> IosConnectionBannerAction.NONE
+    }
+    val showConnectedDeviceName = bridgeEnabled && (
+        status == IosBridgeStatus.SHARING ||
+            status == IosBridgeStatus.NO_ANCS ||
+            status == IosBridgeStatus.CONNECTING
+        )
+    val confirmAppPeer = bridgeEnabled && appSetup && hasSetupPeer
+    val settledPaired = associated && !needsEnrollment && !confirmAppPeer && status != IosBridgeStatus.NEEDS_PAIRING
+    val pairing = when {
+        status == IosBridgeStatus.UNSUPPORTED ->
+            if (associated) IosPairingPresentation.SettledRow else IosPairingPresentation.UnsupportedRow
+        settledPaired -> IosPairingPresentation.SettledRow
+        !bridgeEnabled -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.BRIDGE_OFF,
+            showBusyIndicator = false,
+            showModeSelector = true,
+        )
+        bluetoothOff -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.WAITING_BLUETOOTH,
+            showBusyIndicator = false,
+            showModeSelector = true,
+        )
+        status == IosBridgeStatus.ERROR -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.BRIDGE_ERROR,
+            showBusyIndicator = false,
+            showModeSelector = true,
+        )
+        status == IosBridgeStatus.NEEDS_PAIRING -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.PAIRING_IN_PROGRESS,
+            showBusyIndicator = true,
+            showModeSelector = false,
+        )
+        confirmAppPeer -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.CONFIRM_APP_PEER,
+            showBusyIndicator = status == IosBridgeStatus.CONNECTING,
+            showModeSelector = false,
+        )
+        status == IosBridgeStatus.CONNECTING -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.CONNECTING,
+            showBusyIndicator = true,
+            showModeSelector = false,
+        )
+        else -> IosPairingPresentation.SetupCard(
+            body = SetupCardBody.METHOD_STEPS,
+            showBusyIndicator = false,
+            showModeSelector = true,
+        )
+    }
+    return IosBridgeUiState(
+        connectionBannerAction = connectionBannerAction,
+        showBluetoothOffStatus = bluetoothOff,
+        showConnectedDeviceName = showConnectedDeviceName,
+        pairing = pairing,
+    )
+}
+
 @Composable
 private fun ConnectionCard(
+    uiState: IosBridgeUiState,
     status: IosBridgeStatus,
     deviceName: String?,
     bridgeEnabled: Boolean,
-    onToggle: (Boolean) -> Unit
+    onRetrySharing: () -> Unit,
+    onOpenBluetoothSettings: () -> Unit,
+    onToggle: (Boolean) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth()
@@ -573,15 +687,63 @@ private fun ConnectionCard(
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    statusText(status),
+                    if (uiState.showBluetoothOffStatus) stringResource(R.string.ios_status_bluetooth_off)
+                    else iosStatusText(status),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (bridgeEnabled && deviceName != null && status == IosBridgeStatus.SHARING) {
+                if (uiState.showConnectedDeviceName && deviceName != null) {
                     ConnectedDeviceText(deviceName)
                 }
             }
             Switch(checked = bridgeEnabled, onCheckedChange = onToggle)
+        }
+        AnimatedVisibility(visible = uiState.connectionBannerAction != IosConnectionBannerAction.NONE) {
+            Column(Modifier.fillMaxWidth()) {
+                HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                Column(
+                    Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    when (uiState.connectionBannerAction) {
+                        IosConnectionBannerAction.RETRY_SHARING -> {
+                            Text(
+                                stringResource(R.string.ios_no_ancs_help),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            FilledTonalButton(onClick = onRetrySharing) {
+                                Icon(
+                                    RefreshIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                                Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                                Text(stringResource(R.string.ios_pairing_retry_sharing))
+                            }
+                        }
+
+                        IosConnectionBannerAction.OPEN_BLUETOOTH_SETTINGS -> {
+                            Text(
+                                stringResource(R.string.ios_bluetooth_off_help),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            FilledTonalButton(onClick = onOpenBluetoothSettings) {
+                                Icon(
+                                    SettingsIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(ButtonDefaults.IconSize),
+                                )
+                                Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                                Text(stringResource(R.string.ios_open_bluetooth_settings))
+                            }
+                        }
+
+                        IosConnectionBannerAction.NONE -> Unit
+                    }
+                }
+            }
         }
     }
 }
@@ -599,28 +761,353 @@ private fun ConnectedDeviceText(deviceName: String) {
 
 @Composable
 private fun PairingCard(
+    uiState: IosBridgeUiState,
     associated: Boolean,
+    needsEnrollment: Boolean,
     pairedName: String?,
-    onPair: () -> Unit,
-    onForget: () -> Unit
+    appSetup: Boolean,
+    setupPeer: IosCompanion.Peer?,
+    onModeChanged: () -> Unit,
+    onConfirmSetup: (IosCompanion.Peer) -> Unit,
+    onEnableBridge: () -> Unit,
+    onForget: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
-        ListItem(
-            supportingContent = {
-                Text(
-                    when {
-                        !associated -> stringResource(R.string.ios_pairing_off)
-                        pairedName != null -> stringResource(R.string.ios_pairing_on, pairedName)
-                        else -> stringResource(R.string.ios_pairing_on_unknown)
+    when (val presentation = uiState.pairing) {
+        IosPairingPresentation.SettledRow,
+        IosPairingPresentation.UnsupportedRow -> {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = ComposeColor.Transparent),
+                    supportingContent = {
+                        Text(
+                            if (presentation == IosPairingPresentation.UnsupportedRow) {
+                                stringResource(R.string.ios_status_unsupported)
+                            } else {
+                                pairedName ?: stringResource(R.string.ios_pairing_on_unknown)
+                            }
+                        )
+                    },
+                    trailingContent = {
+                        if (associated) {
+                            TextButton(onClick = onForget) { Text(stringResource(R.string.ios_pairing_forget)) }
+                        }
+                    },
+                ) {
+                    Text(
+                        stringResource(
+                            if (presentation == IosPairingPresentation.UnsupportedRow) R.string.ios_pairing_title
+                            else R.string.ios_pairing_title_paired
+                        )
+                    )
+                }
+            }
+        }
+
+        is IosPairingPresentation.SetupCard -> {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                if (presentation.showBusyIndicator) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.5.dp,
+                                    )
+                                } else {
+                                    Icon(
+                                        PhoneIphoneIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                }
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.ios_pairing_title),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                when {
+                                    associated && needsEnrollment ->
+                                        pairedName?.let { stringResource(R.string.ios_pairing_needs_enrollment, it) }
+                                            ?: stringResource(R.string.ios_pairing_needs_enrollment_unknown)
+                                    associated && pairedName != null -> stringResource(R.string.ios_pairing_on, pairedName)
+                                    associated -> stringResource(R.string.ios_pairing_on_unknown)
+                                    presentation.body == SetupCardBody.PAIRING_IN_PROGRESS ->
+                                        stringResource(R.string.ios_status_needs_pairing)
+                                    presentation.body == SetupCardBody.CONNECTING ->
+                                        stringResource(R.string.ios_status_connecting)
+                                    else -> stringResource(R.string.ios_pairing_off)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (associated) {
+                            TextButton(onClick = onForget) {
+                                Text(stringResource(R.string.ios_pairing_forget))
+                            }
+                        } else if (presentation.body == SetupCardBody.BRIDGE_OFF) {
+                            FilledTonalButton(onClick = onEnableBridge) {
+                                Text(stringResource(R.string.ios_pairing_start))
+                            }
+                        }
                     }
-                )
-            },
-            trailingContent = {
-                if (associated) TextButton(onClick = onForget) { Text(stringResource(R.string.ios_pairing_forget)) }
-                else Button(onClick = onPair) { Text(stringResource(R.string.ios_pairing_setup)) }
-            },
-        ) { Text(stringResource(R.string.ios_pairing_title)) }
+
+                    if (presentation.showModeSelector) {
+                        IphoneSetupModeSelector(
+                            appSetup = appSetup,
+                            onModeChanged = onModeChanged,
+                        )
+                    }
+
+                    when (presentation.body) {
+                        SetupCardBody.BRIDGE_OFF -> if (associated) {
+                            FilledTonalButton(
+                                onClick = onEnableBridge,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(stringResource(R.string.onboarding_iphone_enable))
+                            }
+                        }
+
+                        SetupCardBody.WAITING_BLUETOOTH -> Text(
+                            stringResource(R.string.ios_pairing_waiting_bluetooth),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        SetupCardBody.BRIDGE_ERROR -> Text(
+                            stringResource(R.string.ios_pairing_error_hint),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        SetupCardBody.PAIRING_IN_PROGRESS -> Text(
+                            stringResource(R.string.ios_pairing_in_progress_help),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        SetupCardBody.CONNECTING -> Text(
+                            stringResource(R.string.ios_pairing_connecting_help),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        SetupCardBody.CONFIRM_APP_PEER -> setupPeer?.let { peer ->
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Text(
+                                        peer.name ?: peer.address,
+                                        style = MaterialTheme.typography.titleSmall,
+                                    )
+                                    Text(
+                                        stringResource(R.string.ios_app_setup_ready),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Button(
+                                        onClick = { onConfirmSetup(peer) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(
+                                            stringResource(
+                                                R.string.ios_app_setup_confirm,
+                                                peer.name ?: peer.address,
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        SetupCardBody.METHOD_STEPS -> IphoneSetupSteps(appSetup = appSetup)
+                    }
+                }
+            }
+        }
     }
+}
+
+@Composable
+internal fun IphoneSetupModeSelector(
+    appSetup: Boolean,
+    onModeChanged: () -> Unit,
+    modifier: Modifier = Modifier,
+    preferences: IphoneSetupPreferences = IosCompanion.setupPreferences(LocalContext.current),
+) {
+    fun select(useApp: Boolean) {
+        preferences.selectMode(useApp)
+        onModeChanged()
+    }
+    var confirmNative by rememberSaveable { mutableStateOf(false) }
+    if (confirmNative && appSetup) {
+        AlertDialog(
+            onDismissRequest = { confirmNative = false },
+            title = { Text(stringResource(R.string.ios_native_warning_title)) },
+            text = { Text(stringResource(R.string.ios_native_warning_message)) },
+            confirmButton = {
+                TextButton(onClick = { confirmNative = false; select(false) }) {
+                    Text(stringResource(R.string.action_continue))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmNative = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
+    }
+    val choices = listOf(
+        false to stringResource(R.string.ios_setup_mode_bluetooth),
+        true to stringResource(R.string.ios_setup_mode_app),
+    )
+    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
+        choices.forEachIndexed { index, (isApp, label) ->
+            SegmentedButton(
+                selected = isApp == appSetup,
+                onClick = {
+                    if (isApp != appSetup) {
+                        if (!isApp && preferences.warnBeforeNative) confirmNative = true
+                        else select(isApp)
+                    }
+                },
+                shape = SegmentedButtonDefaults.itemShape(index, choices.size),
+                label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            )
+        }
+    }
+}
+
+@Composable
+internal fun IphoneSetupSteps(
+    appSetup: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val steps = if (appSetup) {
+        listOf(
+            stringResource(R.string.ios_setup_step_app_1),
+            stringResource(R.string.ios_setup_step_app_2),
+            stringResource(R.string.ios_setup_step_app_3),
+        )
+    } else {
+        listOf(
+            stringResource(R.string.ios_setup_step_bluetooth_1),
+            stringResource(R.string.ios_setup_step_bluetooth_2),
+            stringResource(R.string.ios_setup_step_bluetooth_3),
+        )
+    }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        steps.forEachIndexed { index, text ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(top = 1.dp).size(22.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            "${index + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                Text(
+                    text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun IncomingIphonePicker(peers: List<IosCompanion.Peer>, onDismiss: () -> Unit, onSelect: (IosCompanion.Peer) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(PhoneIphoneIcon, contentDescription = null) },
+        title = { Text(stringResource(R.string.ios_pairing_choose_connected)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    stringResource(R.string.ios_pairing_choose_connected_body),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(peers, key = { it.address }) { peer ->
+                        Surface(
+                            onClick = { onSelect(peer) },
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        ) {
+                            ListItem(
+                                colors = ListItemDefaults.colors(containerColor = ComposeColor.Transparent),
+                                leadingContent = {
+                                    Icon(
+                                        PhoneIphoneIcon,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                },
+                                supportingContent = peer.name?.let {
+                                    {
+                                        Text(
+                                            peer.address,
+                                            fontFamily = FontFamily.Monospace,
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                },
+                            ) {
+                                Text(
+                                    peer.name ?: peer.address,
+                                    fontFamily = if (peer.name == null) FontFamily.Monospace else null,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
+    )
 }
 
 @Composable
@@ -731,7 +1218,7 @@ private fun AppIconSquare(icon: ImageBitmap?) {
 }
 
 @Composable
-private fun statusText(status: IosBridgeStatus): String = stringResource(
+internal fun iosStatusText(status: IosBridgeStatus): String = stringResource(
     when (status) {
         IosBridgeStatus.OFF -> R.string.ios_status_off
         IosBridgeStatus.UNSUPPORTED -> R.string.ios_status_unsupported

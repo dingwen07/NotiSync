@@ -5,6 +5,7 @@
 ## Use NotiSync
 
 - [Getting started](getting-started.md): install, grant permissions, pair with QR codes or NFC, and select apps.
+- [iOS bridge](ios-bridge.md) covers Bluetooth setup, iPhone notifications (ANCS), and media controls (AMS).
 - [Desktop tools](desktop.md): install the CLI and daemon, use Run, and manage agent skills.
 - [NotiSync Seal](seal.md): approve OpenPGP-signed Git commits and tags on Android.
 - [SSH Agent](ssh-agent.md): use phone key providers with SSH clients on Linux, macOS, Windows, and WSL.

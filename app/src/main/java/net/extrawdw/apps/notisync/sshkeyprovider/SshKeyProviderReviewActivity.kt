@@ -12,6 +12,7 @@ import android.os.CancellationSignal
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -47,7 +48,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
     private var requestId = ""
     private var screen by mutableStateOf<SshReviewScreenState>(SshReviewScreenState.Loading)
     private var storage by mutableStateOf(SshKeyStorageSelection(allowExport = true))
-    private var passphrase by mutableStateOf("")
+    private var passphrase by mutableStateOf(TextFieldState())
     private var importName by mutableStateOf("")
     private var showImportSheet by mutableStateOf(false)
     private var busy by mutableStateOf(false)
@@ -92,7 +93,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         onPrivateKeyTextChange = {},
                         onPaste = {},
                         onNameChange = { importName = it },
-                        onPassphraseChange = ::changePassphrase,
+                        onPassphraseChange = ::invalidateImportPreview,
                         onStorageChange = { storage = it },
                         onContinueClipboard = {},
                         onPreview = ::previewImport,
@@ -100,7 +101,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         onDismiss = {
                             if (!busy) {
                                 showImportSheet = false
-                                changePassphrase("")
+                                passphrase = TextFieldState()
+                                invalidateImportPreview()
                             }
                         },
                     )
@@ -121,7 +123,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         intent.action = null
         setIntent(intent)
         showImportSheet = false
-        passphrase = ""
+        passphrase = TextFieldState()
         screen = SshReviewScreenState.Loading
         load(approveAfterLoad)
     }
@@ -205,7 +207,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
             busy = false
             showImportSheet = false
-            passphrase = ""
+            passphrase = TextFieldState()
             finishAutoOpenedRequestPage()
             return
         }
@@ -280,7 +282,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         if (stored.state != SshProviderRequestState.PENDING_REVIEW) {
             busy = false
             showImportSheet = false
-            passphrase = ""
+            passphrase = TextFieldState()
         }
         screen = SshReviewScreenState.Details(
             request = stored,
@@ -305,8 +307,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         if (generation == renderGeneration) showError(message)
     }
 
-    private fun changePassphrase(value: String) {
-        passphrase = value
+    private fun invalidateImportPreview() {
         val details = screen as? SshReviewScreenState.Details ?: return
         if (details.encryptedImport && details.keyPreview != null) {
             screen = details.copy(keyPreview = null, errorMessage = null)
@@ -317,9 +318,9 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
         val request = details.request.importRequest ?: return
-        if (details.encryptedImport && passphrase.isBlank()) return
+        if (details.encryptedImport && passphrase.text.isBlank()) return
         busy = true
-        val secret = if (details.encryptedImport) passphrase.toCharArray() else null
+        val secret = if (details.encryptedImport) passphrase.text.toString().toCharArray() else null
         lifecycleScope.launch {
             val result = try {
                 runCatching {
@@ -367,7 +368,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
         if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
-        if (details.encryptedImport && passphrase.isBlank()) return
+        if (details.encryptedImport && passphrase.text.isBlank()) return
         if (details.request.kind == SshProviderRequestKind.IMPORT && importName.isBlank()) return
         if (details.request.kind == SshProviderRequestKind.IMPORT && details.keyPreview == null) {
             previewImport()
@@ -381,8 +382,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             when (details.request.kind) {
                 SshProviderRequestKind.IMPORT -> {
-                    val secret = if (details.encryptedImport) passphrase.toCharArray() else null
-                    passphrase = ""
+                    val secret = if (details.encryptedImport) passphrase.text.toString().toCharArray() else null
+                    passphrase = TextFieldState()
                     val result = try {
                         runCatching {
                             withContext(Dispatchers.IO) {

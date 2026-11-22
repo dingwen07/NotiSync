@@ -16,11 +16,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.TextObfuscationMode
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedSecureTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,8 +32,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import java.util.concurrent.atomic.AtomicBoolean
@@ -212,9 +211,11 @@ private enum class ExportScreen { SETUP, WORKING }
 
 @Composable
 private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
-    var password by remember { mutableStateOf("") }
-    var confirmation by remember { mutableStateOf("") }
-    val matches = password == confirmation
+    // Keep password drafts out of saved instance state.
+    val password = remember { TextFieldState() }
+    val confirmation = remember { TextFieldState() }
+    val matches = password.text.contentEquals(confirmation.text)
+    val mismatch = confirmation.text.isNotEmpty() && !matches
     Column(
         Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -227,31 +228,25 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
+            OutlinedSecureTextField(
+                state = password,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(stringResource(R.string.ssh_key_provider_export_password)) },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                textObfuscationMode = TextObfuscationMode.Hidden,
             )
-            OutlinedTextField(
-                value = confirmation,
-                onValueChange = { confirmation = it },
+            OutlinedSecureTextField(
+                state = confirmation,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(stringResource(R.string.ssh_key_provider_export_password_confirm)) },
-                singleLine = true,
-                isError = confirmation.isNotEmpty() && !matches,
-                supportingText = if (confirmation.isNotEmpty() && !matches) {
+                isError = mismatch,
+                supportingText = if (mismatch) {
                     { Text(stringResource(R.string.ssh_key_provider_export_password_mismatch)) }
                 } else {
                     null
                 },
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                textObfuscationMode = TextObfuscationMode.Hidden,
             )
-            if (password.isEmpty()) {
+            if (password.text.isEmpty()) {
                 Text(
                     stringResource(R.string.ssh_key_provider_export_plaintext_warning),
                     style = MaterialTheme.typography.bodySmall,
@@ -259,7 +254,10 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
                 )
             }
             Button(
-                onClick = { onContinue(password.takeIf(String::isNotEmpty)?.toCharArray()) },
+                onClick = {
+                    val text = password.text
+                    onContinue(if (text.isEmpty()) null else CharArray(text.length) { text[it] })
+                },
                 modifier = Modifier.align(Alignment.End),
                 enabled = matches,
             ) {

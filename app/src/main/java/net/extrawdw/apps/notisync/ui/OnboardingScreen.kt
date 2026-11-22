@@ -1,18 +1,13 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.Manifest
-import android.companion.AssociationInfo
-import android.companion.CompanionDeviceManager
 import android.content.Intent
-import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -42,6 +37,8 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.wifi_notification a
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,7 +64,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import net.extrawdw.apps.notisync.ios.IosBridgeService
+import net.extrawdw.apps.notisync.ios.IosBridgeStatus
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ios.IosBluetoothPermissions
 import net.extrawdw.apps.notisync.ios.IosCompanion
@@ -95,17 +95,27 @@ private fun previousStep(from: OnboardingStep, listenerEnabled: Boolean): Onboar
 fun OnboardingScreen(onFinish: () -> Unit) {
     val graph = rememberGraph()
     val context = LocalContext.current
-    // Strings via LocalResources so they re-read on configuration changes; context is retained for
-    // non-resource use (CompanionDeviceManager, Toast, mainExecutor) — same split as IosScreen.
     val resources = LocalResources.current
 
     var step by rememberSaveable { mutableStateOf(OnboardingStep.WELCOME) }
+
+    var selectedPeer by remember { mutableStateOf(IosCompanion.selectedPeer(context)) }
+    val deviceName by graph.iosDeviceRepo.deviceName.collectAsStateWithLifecycle()
+    val pairedName = remember(selectedPeer, deviceName) {
+        IosCompanion.selectedDeviceName(context, selectedPeer) ?: deviceName ?: selectedPeer?.address
+    }
+    val bridgeEnabled by graph.settings.iosBridgeEnabled.collectAsStateWithLifecycle()
+    val status by graph.iosDeviceRepo.status.collectAsStateWithLifecycle()
+    val setupPeer by graph.iosDeviceRepo.setupPeer.collectAsStateWithLifecycle()
+    val setupPreferences = remember(context) { IosCompanion.setupPreferences(context) }
+    val appSetup by setupPreferences.appModeChanges.collectAsStateWithLifecycle(setupPreferences.usesApp)
 
     // Re-read both permissions whenever we return to the foreground (back from the system settings
     // pages the grant buttons open) — the same idiom as DevicesDestination.
     var refresh by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         refresh++
+        selectedPeer = IosCompanion.selectedPeer(context)
         onPauseOrDispose { }
     }
     val postGranted = remember(refresh) {
@@ -138,95 +148,25 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         hadListener = listenerEnabled
     }
 
-    // --- iPhone pairing via CompanionDeviceManager, mirroring IosScreen's flow (association + bond +
-    // presence + bridge start). Onboarding additionally front-loads the Bluetooth permissions so the
-    // bridge the association enables can actually start.
-    val cdm = remember { context.getSystemService(CompanionDeviceManager::class.java) }
-    var cdmAssociated by remember { mutableStateOf(IosCompanion.isAssociated(context)) }
-    var cdmDeviceName by remember { mutableStateOf(IosCompanion.associatedDeviceName(context)) }
-    val intentSenderLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
-            val picked = IosCompanion.deviceFromPickerResult(result.data)
-            val pairingPromptExpected = IosCompanion.bondDevice(context, picked)
-            cdmAssociated = IosCompanion.isAssociated(context)
-            cdmDeviceName = IosCompanion.associatedDeviceName(context)
-            if (cdmAssociated) {
-                IosCompanion.observePresence(context)
-                graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
-            }
-            // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
-            if (pairingPromptExpected) {
-                Toast.makeText(
-                    context,
-                    resources.getString(R.string.ios_pairing_accept_prompt),
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-
-    fun startAssociation() {
-        val mgr = cdm
-        if (mgr == null) {
-            Log.w("OnboardingScreen", "CompanionDeviceManager unavailable")
-            Toast.makeText(
-                context,
-                resources.getString(R.string.ios_pairing_unavailable),
-                Toast.LENGTH_LONG
-            ).show()
-            return
-        }
-        Toast.makeText(
-            context,
-            resources.getString(R.string.ios_pairing_open_bt),
-            Toast.LENGTH_LONG
-        ).show()
-        fun launchPicker(intentSender: IntentSender) {
-            runCatching {
-                intentSenderLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
-            }.onFailure { Log.w("OnboardingScreen", "launching CDM picker failed", it) }
-        }
-        runCatching {
-            mgr.associate(
-                IosCompanion.request(),
-                context.mainExecutor,
-                object : CompanionDeviceManager.Callback() {
-                    override fun onAssociationPending(intentSender: IntentSender) {
-                        launchPicker(intentSender)
-                    }
-
-                    @Suppress("OVERRIDE_DEPRECATION") // pre-33 entry point; delegate to the same picker launch
-                    override fun onDeviceFound(intentSender: IntentSender) {
-                        launchPicker(intentSender)
-                    }
-
-                    override fun onAssociationCreated(associationInfo: AssociationInfo) {
-                        Log.i("OnboardingScreen", "CDM association created: ${associationInfo.id}")
-                        cdmAssociated = true
-                        cdmDeviceName = IosCompanion.associatedDeviceName(context)
-                        IosCompanion.observePresence(context)
-                        // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                        IosCompanion.bondDevice(
-                            context,
-                            runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull()
-                        )
-                        graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
-                    }
-
-                    override fun onFailure(error: CharSequence?) {
-                        Log.w("OnboardingScreen", "CDM association failed: $error")
-                    }
-                })
-        }.onFailure {
-            Log.w("OnboardingScreen", "associate() threw", it)
-            Toast.makeText(
-                context,
-                resources.getString(R.string.ios_pairing_failed, it.message ?: ""),
-                Toast.LENGTH_LONG
-            ).show()
+    val needsEnrollment = remember(selectedPeer, status) { IosCompanion.needsLeEnrollment(context, selectedPeer) }
+    IphoneCompanionAccess(
+        enabled = step == OnboardingStep.IPHONE && bridgeEnabled && (appSetup || needsEnrollment && status == IosBridgeStatus.ADVERTISING),
+        appSetup = appSetup, selected = selectedPeer,
+    ) {
+        selectedPeer = IosCompanion.selectedPeer(context)
+    }
+    LaunchedEffect(status, deviceName, setupPeer) {
+        selectedPeer = IosCompanion.selectedPeer(context)
+    }
+    LaunchedEffect(step, bridgeEnabled, status) {
+        if (step == OnboardingStep.IPHONE && bridgeEnabled &&
+            (status == IosBridgeStatus.OFF || status == IosBridgeStatus.ERROR) &&
+            IosBluetoothPermissions.hasRequired(context) &&
+            graph.settings.iosBridgeEnabledNow()
+        ) {
+            IosBridgeService.start(context)
         }
     }
-
     // Same denied-once handling as POST_NOTIFICATIONS: a denied Bluetooth set auto-denies re-requests,
     // so "Pair iPhone" would no-op — route to the app's settings page (Permissions → Nearby devices).
     val btPermissionsGranted = remember(refresh) {
@@ -238,12 +178,12 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         refresh++
-        if (IosBluetoothPermissions.hasRequired(context)) startAssociation() else btDeniedOnce = true
+        if (IosBluetoothPermissions.hasRequired(context)) graph.setIosBridgeEnabled(true) else btDeniedOnce = true
     }
 
     fun startIphonePairing() {
         if (IosBluetoothPermissions.hasRequired(context)) {
-            startAssociation()
+            graph.setIosBridgeEnabled(true)
         } else {
             btPermissionLauncher.launch(IosBluetoothPermissions.requestPermissions())
         }
@@ -361,38 +301,162 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                         onPrimary = { step = OnboardingStep.IPHONE },
                     )
 
-                    OnboardingStep.IPHONE -> StepPage(
-                        icon = PhoneIphoneIcon,
-                        title = stringResource(R.string.onboarding_iphone_title),
-                        body = stringResource(R.string.onboarding_iphone_body),
-                        status = when {
-                            !cdmAssociated -> null
-                            cdmDeviceName != null ->
-                                stringResource(R.string.ios_pairing_on, cdmDeviceName ?: "")
-                            else -> stringResource(R.string.ios_pairing_on_unknown)
-                        },
-                        primaryLabel = stringResource(
-                            when {
-                                cdmAssociated -> R.string.onboarding_continue
-                                btDeniedOnce && !btPermissionsGranted -> R.string.devices_open_settings
-                                else -> R.string.onboarding_iphone_pair
-                            }
-                        ),
-                        onPrimary = {
-                            when {
-                                cdmAssociated -> step = OnboardingStep.PAIR
-                                btDeniedOnce && !btPermissionsGranted -> context.startActivity(
-                                    Intent(
-                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                        Uri.fromParts("package", context.packageName, null)
-                                    )
+                    OnboardingStep.IPHONE -> {
+                        val settledPaired = selectedPeer != null &&
+                            !needsEnrollment &&
+                            !(bridgeEnabled && appSetup && setupPeer != null) &&
+                            status != IosBridgeStatus.NEEDS_PAIRING
+                        val selectedLabel = when {
+                            selectedPeer == null -> null
+                            needsEnrollment ->
+                                pairedName?.let { stringResource(R.string.ios_pairing_needs_enrollment, it) }
+                                    ?: stringResource(R.string.ios_pairing_needs_enrollment_unknown)
+                            else ->
+                                pairedName?.let { stringResource(R.string.ios_pairing_on, it) }
+                                    ?: stringResource(R.string.ios_pairing_on_unknown)
+                        }
+                        when {
+                            !bridgeEnabled -> StepPage(
+                                icon = PhoneIphoneIcon,
+                                title = stringResource(R.string.onboarding_iphone_title),
+                                body = stringResource(R.string.onboarding_iphone_body),
+                                status = selectedLabel,
+                                primaryLabel = stringResource(
+                                    if (btDeniedOnce && !btPermissionsGranted) R.string.devices_open_settings
+                                    else R.string.onboarding_iphone_enable
+                                ),
+                                onPrimary = {
+                                    if (btDeniedOnce && !btPermissionsGranted) {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                Uri.fromParts("package", context.packageName, null),
+                                            )
+                                        )
+                                    } else {
+                                        startIphonePairing()
+                                    }
+                                },
+                                secondaryLabel = stringResource(
+                                    if (selectedPeer != null) R.string.onboarding_continue
+                                    else R.string.onboarding_skip
+                                ),
+                                onSecondary = { step = OnboardingStep.PAIR },
+                            )
+
+                            status == IosBridgeStatus.NO_ANCS -> StepPage(
+                                icon = PhoneIphoneIcon,
+                                title = stringResource(R.string.onboarding_iphone_title),
+                                body = stringResource(R.string.ios_no_ancs_help),
+                                status = iosStatusText(status),
+                                primaryLabel = stringResource(R.string.ios_pairing_retry_sharing),
+                                onPrimary = { graph.iosBridgeManager?.retrySharing() },
+                                secondaryLabel = stringResource(R.string.onboarding_continue),
+                                onSecondary = { step = OnboardingStep.PAIR },
+                            )
+
+                            settledPaired -> StepPage(
+                                icon = PhoneIphoneIcon,
+                                title = stringResource(R.string.onboarding_iphone_title),
+                                body = stringResource(R.string.onboarding_iphone_body),
+                                status = if (status == IosBridgeStatus.SHARING && pairedName != null) {
+                                    "${iosStatusText(status)} · ${stringResource(R.string.ios_connected_device, pairedName)}"
+                                } else {
+                                    selectedLabel
+                                },
+                                primaryLabel = stringResource(R.string.onboarding_continue),
+                                onPrimary = { step = OnboardingStep.PAIR },
+                            )
+
+                            else -> {
+                                val currentSetupPeer = setupPeer
+                                val canConfirmAppPeer = appSetup && currentSetupPeer != null
+                                StepPage(
+                                    icon = PhoneIphoneIcon,
+                                    title = stringResource(R.string.onboarding_iphone_title),
+                                    body = stringResource(
+                                        when (status) {
+                                            IosBridgeStatus.NEEDS_PAIRING -> R.string.ios_pairing_in_progress_help
+                                            IosBridgeStatus.CONNECTING -> R.string.ios_pairing_connecting_help
+                                            IosBridgeStatus.ERROR -> R.string.ios_pairing_error_hint
+                                            IosBridgeStatus.UNSUPPORTED -> R.string.ios_status_unsupported
+                                            else -> R.string.ios_pairing_off
+                                        }
+                                    ),
+                                    status = iosStatusText(status),
+                                    extraContent = if (status == IosBridgeStatus.ADVERTISING ||
+                                        status == IosBridgeStatus.OFF ||
+                                        canConfirmAppPeer
+                                    ) {
+                                        {
+                                            Card(
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                                ),
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(16.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                                ) {
+                                                    if (currentSetupPeer == null) {
+                                                        IphoneSetupModeSelector(
+                                                            appSetup = appSetup,
+                                                            onModeChanged = {
+                                                                if (bridgeEnabled) {
+                                                                    graph.iosBridgeManager?.refreshSelection()
+                                                                }
+                                                            },
+                                                        )
+                                                    }
+                                                    if (canConfirmAppPeer) {
+                                                        Text(
+                                                            stringResource(R.string.ios_app_setup_ready),
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        )
+                                                    } else {
+                                                        IphoneSetupSteps(appSetup = appSetup)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    primaryLabel = if (canConfirmAppPeer) {
+                                        stringResource(
+                                            R.string.ios_app_setup_confirm,
+                                            currentSetupPeer.name ?: currentSetupPeer.address,
+                                        )
+                                    } else {
+                                        stringResource(R.string.onboarding_iphone_later)
+                                    },
+                                    onPrimary = {
+                                        if (canConfirmAppPeer) {
+                                            if (graph.iosBridgeManager?.confirmSetupPeer(currentSetupPeer.address) == true) {
+                                                selectedPeer = IosCompanion.selectedPeer(context)
+                                            } else {
+                                                Toast.makeText(
+                                                    context,
+                                                    resources.getString(R.string.ios_pairing_bond_lost),
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                        } else {
+                                            step = OnboardingStep.PAIR
+                                        }
+                                    },
+                                    secondaryLabel = if (canConfirmAppPeer) {
+                                        stringResource(R.string.onboarding_iphone_later)
+                                    } else {
+                                        null
+                                    },
+                                    onSecondary = { step = OnboardingStep.PAIR },
                                 )
-                                else -> startIphonePairing()
                             }
-                        },
-                        secondaryLabel = if (cdmAssociated) null else stringResource(R.string.onboarding_skip),
-                        onSecondary = { step = OnboardingStep.PAIR },
-                    )
+                        }
+                    }
 
                     OnboardingStep.PAIR -> StepPage(
                         icon = QrCode2Icon,
@@ -422,6 +486,7 @@ private fun StepPage(
     primaryLabel: String,
     onPrimary: () -> Unit,
     status: String? = null,
+    extraContent: (@Composable () -> Unit)? = null,
     secondaryLabel: String? = null,
     onSecondary: () -> Unit = {},
 ) {
@@ -469,6 +534,11 @@ private fun StepPage(
                     color = MaterialTheme.colorScheme.primary,
                     textAlign = TextAlign.Center,
                 )
+            }
+            if (extraContent != null) {
+                Spacer(Modifier.height(16.dp))
+                extraContent()
+                Spacer(Modifier.height(12.dp))
             }
         }
         Button(onClick = onPrimary, modifier = Modifier.fillMaxWidth()) {

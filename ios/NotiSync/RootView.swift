@@ -26,7 +26,7 @@ struct RootView: View {
                         .tabItem { Label("Inbox", systemImage: "tray.full") }
                         .tag(RootTab.inbox)
                     DevicesView()
-                        .tabItem { Label("Devices", systemImage: "iphone.gen3.radiowaves.left.and.right") }
+                        .tabItem { Label("Devices", systemImage: HostFormFactor.current.devicesSymbolName) }
                         .tag(RootTab.devices)
                     SshKeyProviderView()
                         .tabItem { Label("SSH Keys", systemImage: "number") }
@@ -576,10 +576,8 @@ struct DevicesView: View {
     @State private var preparingNfcPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
     @State private var selectedHotspotDevice: TrustedDevice?
-    /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
-    /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
-    /// was up. Loaded on page entry / pull-to-refresh, and re-derived when the user edits a filter (so a
-    /// "Clear Filter" swipe removes its row immediately).
+    /// Backfill names from history on entry or refresh. Incoming mirrors update the small shared
+    /// registry before the Inbox revision changes, so a visible tab can refresh without scanning history.
     @State private var iosDeviceRows: [FilteredIosDeviceRecord] = []
 
     private var settings: AppSettings? { settingsRows.first }
@@ -642,6 +640,9 @@ struct DevicesView: View {
             .task { reloadIosDeviceRows() }
             .refreshable { reloadIosDeviceRows() }
             .onChange(of: runtime.notificationFilterRevision) { _, _ in reloadIosDeviceRows() }
+            .onChange(of: runtime.inboxRevision) { _, _ in
+                iosDeviceRows = NotificationFilterStore.preferences().iosDevices.sorted(by: areIosDevicesInDisplayOrder)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -759,29 +760,15 @@ struct DevicesView: View {
     }
 
     private func reloadIosDeviceRows() {
-        var rowsByKey: [String: FilteredIosDeviceRecord] = [:]
-        for device in runtime.iosDevices() {
-            rowsByKey[device.deviceKey] = device
-        }
         let ancsRaw = OriginPlatform.IOS_ANCS.rawValue
         var descriptor = FetchDescriptor<InboxNotification>(
             predicate: #Predicate { $0.originPlatform == ancsRaw },
             sortBy: [SortDescriptor(\.receivedAt, order: .reverse)])
-        // Recent history suffices to (re)derive bridged devices — persisted filter records already seed
-        // rowsByKey, and the Inbox is unbounded, so cap the scan instead of materializing everything.
+        // Limit historical backfill. The shared registry also retains devices outside this window.
         descriptor.fetchLimit = 2000
-        for notification in (try? modelContext.fetch(descriptor)) ?? [] {
-            guard !notification.sourceClientId.isEmpty,
-                  let deviceKey = runtime.filterDeviceKey(for: notification) else { continue }
-            let name = notification.originDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let displayName = name?.isEmpty == false ? name ?? "iOS Device" : "iOS Device"
-            rowsByKey[deviceKey] = FilteredIosDeviceRecord(
-                peerClientId: notification.sourceClientId,
-                originDeviceId: notification.originDeviceId,
-                deviceName: displayName,
-                updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
-        }
-        iosDeviceRows = rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
+        let history = (try? modelContext.fetch(descriptor)) ?? []
+        let observations = history.compactMap { FilteredIosDeviceRecord($0) }
+        iosDeviceRows = NotificationFilterStore.iosDevices(merging: observations).sorted(by: areIosDevicesInDisplayOrder)
     }
 
     private var devicesInNameOrder: [TrustedDevice] {
@@ -1324,6 +1311,7 @@ struct ActivityLogView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
+    @ObservedObject private var androidBridge = AndroidBridgeSetup.shared
     @Query private var settingsRows: [AppSettings]
     @State private var brokerURL = ""
     @State private var deviceName = ""
@@ -1347,6 +1335,21 @@ struct SettingsView: View {
                     }
                     LabeledContent("Permission", value: LocalizedText.notificationPermission(settingsRows.first?.notificationPermissionValue ?? .unknown))
                     LabeledContent("Pairing", value: LocalizedText.pairingStatus(settingsRows.first?.pairingStatusValue ?? .unpaired))
+                }
+                Section {
+                    NavigationLink {
+                        AndroidBridgeSetupView()
+                    } label: {
+                        LabeledContent {
+                            if let summary = androidBridgeSummary {
+                                Text(verbatim: summary)
+                            }
+                        } label: {
+                            Label("Android Bluetooth Bridge", systemImage: HostFormFactor.current.bluetoothBridgeSymbolName)
+                        }
+                    }
+                } footer: {
+                    Text("Share this \(HostFormFactor.current.displayName)’s system notifications over Bluetooth with a selected Android device.")
                 }
                 Section {
                     Toggle(isOn: Binding(
@@ -1488,6 +1491,14 @@ struct SettingsView: View {
             || deviceName != settings.deviceName
             || NotiSyncConfig.effectiveAPNSEnvironment(environment)
                 != NotiSyncConfig.effectiveAPNSEnvironment(settings.apnsEnvironment)
+    }
+
+    private var androidBridgeSummary: String? {
+        if androidBridge.selected.isEmpty { return nil }
+        if androidBridge.selected.count == 1, let (id, name) = androidBridge.selected.first {
+            return name.isEmpty ? String(id.uuidString.suffix(8)) : name
+        }
+        return String(localized: "\(androidBridge.selected.count) selected")
     }
 
     private func loadSettings() {

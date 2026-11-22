@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        _ = HostFormFactor.current
+        AndroidBridgeSetup.shared.resumeSelection()
         FirebaseBootstrap.configure()
         UNUserNotificationCenter.current().delegate = self
         // Notification categories must exist before an alert or cold-launch response is delivered. In
@@ -61,7 +63,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if NotificationFilterStore.shouldFilterNotification(
             originPlatform: info["originPlatform"] as? String,
             sourceClientId: info["sourceClientId"] as? String ?? "",
-            originDeviceName: info["originDeviceName"] as? String,
             originDeviceId: info["originDeviceId"] as? String,
             packageName: info["packageName"] as? String,
             iosBundleId: info["iosBundleId"] as? String,

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UIKit
 
 enum ActivityKind: String, Codable, CaseIterable {
     case received
@@ -333,7 +334,7 @@ final class AppSettings {
     init(
         id: String = AppSettings.singletonId,
         brokerURL: String = NotiSyncConfig.defaultBrokerURL,
-        deviceName: String = "iPhone",
+        deviceName: String = UIDevice.current.name,
         apnsEnvironment: RouteEnvironment = NotiSyncConfig.defaultAPNSEnvironment,
         routeEpoch: Int = 1
     ) {

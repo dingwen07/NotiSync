@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.add as AddIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
@@ -172,7 +173,7 @@ private class SshProviderUiState(private val graph: net.extrawdw.apps.notisync.A
     val previewingImport = mutableStateOf(false)
     val importingKey = mutableStateOf(false)
     val importName = mutableStateOf("")
-    val importPassphrase = mutableStateOf("")
+    val importPassphrase = mutableStateOf(TextFieldState())
     val importStorage = mutableStateOf(SshKeyStorageSelection(allowExport = true))
     val renaming = mutableStateOf<SshKeyDescriptor?>(null)
     val selectedKnownHost = mutableStateOf<SshKnownHost?>(null)
@@ -190,7 +191,7 @@ private class SshProviderUiState(private val graph: net.extrawdw.apps.notisync.A
             }
         }
         privateKeyText.value = null
-        importPassphrase.value = ""
+        importPassphrase.value = TextFieldState()
         pendingImport.value = null
         pendingStorageAuthentication.value = null
     }
@@ -303,7 +304,7 @@ fun SshKeyProviderScreen(
                 }.onSuccess {
                     importError = null
                     importName = it.suggestedName
-                    importPassphrase = ""
+                    importPassphrase = TextFieldState()
                     importStorage = SshKeyStorageSelection(allowExport = true)
                     pendingImport = it
                 }
@@ -907,7 +908,7 @@ fun SshKeyProviderScreen(
                                 pendingImport = null
                                 importError = null
                                 importName = defaultImportedKeyName
-                                importPassphrase = ""
+                                importPassphrase = TextFieldState()
                                 importStorage = SshKeyStorageSelection(allowExport = true)
                                 privateKeyText = ""
                                 pasteClipboardIntoImport(requirePrivateKey = true)
@@ -1148,7 +1149,6 @@ fun SshKeyProviderScreen(
             onPaste = { pasteClipboardIntoImport(requirePrivateKey = false) },
             onNameChange = { importName = it },
             onPassphraseChange = {
-                importPassphrase = it
                 if (pending?.preview != null) pendingImport = pending.copy(preview = null)
                 importError = null
             },
@@ -1187,7 +1187,7 @@ fun SshKeyProviderScreen(
             },
             onPreview = {
                 val bytes = pending?.bytes ?: return@SshKeyImportSheet
-                val passphrase = importPassphrase.toCharArray()
+                val passphrase = importPassphrase.text.toString().toCharArray()
                 previewingImport = true
                 importError = null
                 scope.launch {
@@ -1211,7 +1211,7 @@ fun SshKeyProviderScreen(
             },
             onImport = {
                 val bytes = pending?.bytes ?: return@SshKeyImportSheet
-                val passphrase = if (pending.encrypted) importPassphrase.toCharArray() else null
+                val passphrase = if (pending.encrypted) importPassphrase.text.toString().toCharArray() else null
                 importingKey = true
                 importError = null
                 scope.launch {
@@ -1235,7 +1235,7 @@ fun SshKeyProviderScreen(
                     result.onSuccess {
                         bytes.fill(0)
                         pendingImport = null
-                        importPassphrase = ""
+                        importPassphrase = TextFieldState()
                         importingKey = false
                         finishStorage(it)
                     }.onFailure {
@@ -1252,7 +1252,7 @@ fun SshKeyProviderScreen(
                 pendingImport = null
                 privateKeyText = null
                 importName = ""
-                importPassphrase = ""
+                importPassphrase = TextFieldState()
                 importError = null
                 previewingImport = false
                 validatingImportSource = false

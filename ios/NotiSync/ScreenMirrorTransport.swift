@@ -35,7 +35,7 @@ nonisolated enum IOSScreenTransportError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noLAN: "Connect this iPhone and the source device to the same Wi-Fi network."
+        case .noLAN: String(localized: "Connect this \(HostFormFactor.current.displayName) and the source device to the same Wi-Fi network.")
         case .listenerFailed(let detail): "Could not open the local screen listener: \(detail)"
         case .connectionFailed(let detail): "The secure screen connection failed: \(detail)"
         case .timedOut: "The source device did not connect before the request expired."

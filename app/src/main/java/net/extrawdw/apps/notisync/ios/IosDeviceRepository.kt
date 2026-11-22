@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.ios
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** User-facing iOS bridge status for the iOS tab. */
 enum class IosBridgeStatus {
@@ -11,7 +12,7 @@ enum class IosBridgeStatus {
     /** This phone can't act as a BLE peripheral (no advertiser / multi-advertisement unsupported). */
     UNSUPPORTED,
 
-    /** Advertising the ANCS solicitation; waiting for an iPhone to connect from its Bluetooth settings. */
+    /** Waiting for an iPhone connection from Bluetooth Settings or the iPhone app. */
     ADVERTISING,
 
     /** An iPhone connected; discovering services / negotiating MTU. */
@@ -37,6 +38,16 @@ class IosDeviceRepository {
 
     private val _deviceName = MutableStateFlow<String?>(null)
     val deviceName: StateFlow<String?> = _deviceName
+
+    private val _connectedLePeers = MutableStateFlow<List<IosCompanion.Peer>>(emptyList())
+    val connectedLePeers = _connectedLePeers.asStateFlow()
+
+    internal fun setConnectedLePeers(peers: List<IosCompanion.Peer>) { _connectedLePeers.value = peers }
+
+    private val _setupPeer = MutableStateFlow<IosCompanion.Peer?>(null)
+    val setupPeer = _setupPeer.asStateFlow()
+
+    internal fun setSetupPeer(peer: IosCompanion.Peer?) { _setupPeer.value = peer }
 
     fun setStatus(status: IosBridgeStatus) {
         _status.value = status

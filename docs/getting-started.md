@@ -81,13 +81,9 @@ on what the original app exposes. Dismissals can synchronize across trusted devi
 
 ## Forward notifications from an iPhone
 
-Use the **iPhone** tab in the Android app to pair the iPhone over Bluetooth and grant the permissions
-shown during setup, including Android's nearby-device permission and iPhone notification sharing.
-The Android device receives notifications through Apple Notification Center Service (ANCS) and
-forwards them to your trusted devices.
-
-Keep the iPhone and Android bridge within Bluetooth range. The iOS NotiSync app is not required for
-this bridge; install it when you also want the iPhone or iPad to receive mirrored notifications.
+On Android, open NotiSync’s **iPhone** tab and turn on **iPhone over Bluetooth**. Follow the
+[iOS bridge guide](ios-bridge.md) to approve device access, choose which iPhone notifications to
+mirror, and use Now Playing controls.
 
 ## Use a custom broker
 

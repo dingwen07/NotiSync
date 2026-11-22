@@ -2,6 +2,58 @@ import Foundation
 import SwiftUI
 import UIKit
 
+/// Runtime form factor of the device running NotiSync (iPhone, iPad, or Apple Silicon Mac).
+nonisolated enum HostFormFactor: Sendable {
+    case iPhone
+    case iPad
+    case mac
+
+    static let current: Self = {
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            return .mac
+        }
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                UIDevice.current.userInterfaceIdiom == .pad ? .iPad : .iPhone
+            }
+        }
+        let simModel = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? ""
+        if !simModel.isEmpty {
+            return simModel.hasPrefix("iPad") ? .iPad : .iPhone
+        }
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafePointer(to: &systemInfo.machine) {
+            $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+        return machine.hasPrefix("iPad") ? .iPad : .iPhone
+    }()
+
+    var displayName: String {
+        switch self {
+        case .iPhone: "iPhone"
+        case .iPad: "iPad"
+        case .mac: "Mac"
+        }
+    }
+
+    /// Verified SF Symbols (`ipad.gen2.radiowaves.left.and.right` does not exist in SF Symbols).
+    var devicesSymbolName: String {
+        switch self {
+        case .iPhone: "iphone.gen3.radiowaves.left.and.right"
+        case .iPad: "ipad.and.iphone"
+        case .mac: "laptopcomputer.and.iphone"
+        }
+    }
+
+    var bluetoothBridgeSymbolName: String {
+        switch self {
+        case .iPhone: "iphone.radiowaves.left.and.right"
+        case .iPad, .mac: "antenna.radiowaves.left.and.right"
+        }
+    }
+}
+
 /// SF Symbols ship as SVG renditions that CoreUI parses on the symbol's FIRST render in the process
 /// (`CGSVGDocumentCreateFromData` — on the main thread, and heavily amplified under a debugger). Glyphs
 /// that first appear inside a gesture — swipe actions, menus — pay that parse mid-interaction, which

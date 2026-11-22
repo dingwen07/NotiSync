@@ -59,6 +59,7 @@ import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.NotificationForwardingStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
+import net.extrawdw.apps.notisync.data.defaultDeviceName
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.apps.notisync.data.notiSyncDataStore
@@ -386,7 +387,7 @@ class AppGraph(private val app: Application) {
         val vault = KeyVault()
         val ds = app.dataStore
         val operationalApplicationState = RoomOperationalApplicationState(app)
-        settings = SettingsRepository(ds, scope, operationalApplicationState)
+        settings = SettingsRepository(ds, scope, operationalApplicationState, defaultDeviceName(app))
         settings.menuConfiguration
             .onEach { menu ->
                 runCatching { AppMenuShortcuts.update(app, menu) }
@@ -840,6 +841,12 @@ class AppGraph(private val app: Application) {
             },
             registry = registry,
             deviceRepo = iosDeviceRepo,
+            onRepeatedAdvertisingLoss = { appModeFailed ->
+                scope.launch {
+                    if (appModeFailed) disableIosBridge()
+                    IosBridgeService.notifyAdvertisingLoss(app, bridgeDisabled = appModeFailed)
+                }
+            },
             localDisplayEnabled = { settings.iosLocalDisplay.value },
             meshMirrorEnabled = { settings.iosMeshMirror.value },
             mediaMirrorEnabled = { settings.iosMediaMirror.value },
@@ -1257,13 +1264,21 @@ class AppGraph(private val app: Application) {
         // fire-and-forget persist races the synchronous service stop (status -> OFF), so the effect would see
         // the stale enabled=true together with OFF and immediately restart the bridge — "off" never sticks.
         scope.launch {
-            runCatching { settings.setIosBridgeEnabled(enabled) }
             if (enabled) {
+                runCatching { settings.setIosBridgeEnabled(true) }
                 IosBridgeService.start(app)
             } else {
-                IosBridgeService.stop(app)
-                IosCompanion.stopObservingPresence(app) // user turned it off: don't let CDM presence re-wake us
+                disableIosBridge()
             }
+        }
+    }
+
+    private suspend fun disableIosBridge() {
+        try {
+            settings.setIosBridgeEnabled(false)
+        } finally {
+            IosBridgeService.stop(app)
+            IosCompanion.stopObservingPresence(app)
         }
     }
 

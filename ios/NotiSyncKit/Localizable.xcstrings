@@ -1,6 +1,294 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Selected devices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选设备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已選裝置"
+          }
+        }
+      }
+    },
+    "Nearby devices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附近的设备"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附近的裝置"
+          }
+        }
+      }
+    },
+    "Android Bluetooth Bridge" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Android 蓝牙桥接"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Android 藍牙橋接"
+          }
+        }
+      }
+    },
+    "Share this %@’s system notifications over Bluetooth with a selected Android device." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过蓝牙与所选 Android 设备共享此 %@ 的系统通知。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "透過藍牙與所選 Android 裝置分享此 %@ 的系統通知。"
+          }
+        }
+      }
+    },
+    "%lld selected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已选 %lld 台"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已選 %lld 部"
+          }
+        }
+      }
+    },
+    "Allow Bluetooth access for NotiSync in Settings on this %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在此 %@ 的“设置”中允许 NotiSync 使用蓝牙。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請在此 %@ 的「設定」中允許 NotiSync 使用藍牙。"
+          }
+        }
+      }
+    },
+    "Turn on Bluetooth to connect to Android." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请打开蓝牙以连接 Android 设备。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請開啟藍牙以連線至 Android 裝置。"
+          }
+        }
+      }
+    },
+    "Bluetooth is unavailable on this device." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备无法使用蓝牙。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此裝置無法使用藍牙。"
+          }
+        }
+      }
+    },
+    "Looking for Android devices…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查找 Android 设备…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在尋找 Android 裝置…"
+          }
+        }
+      }
+    },
+    "Forget" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "忘记"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "忘記"
+          }
+        }
+      }
+    },
+    "Waiting for Bluetooth…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等待蓝牙…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等待藍牙…"
+          }
+        }
+      }
+    },
+    "Connecting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在连接…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在連線…"
+          }
+        }
+      }
+    },
+    "Open Bluetooth in Settings on this %@, select the info button next to this device, and turn on Share System Notifications." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此 %@ 上打开“设置”中的“蓝牙”，点按此设备旁的信息按钮，并开启“共享系统通知”。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此 %@ 上開啟「設定」中的「藍牙」，點選此裝置旁的資訊按鈕，並開啟「分享系統通知」。"
+          }
+        }
+      }
+    },
+    "Notification sharing is on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已开启通知共享。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已開啟通知分享。"
+          }
+        }
+      }
+    },
+    "Connection failed. Retrying automatically…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接失败，正在自动重试…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "連線失敗，正在自動重試…"
+          }
+        }
+      }
+    },
+    "Connect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "連線"
+          }
+        }
+      }
+    },
+    "Checking Bluetooth…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查蓝牙…"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在檢查藍牙…"
+          }
+        }
+      }
+    },
+    "On Android, open NotiSync’s iPhone tab, turn on the bridge, and choose iOS App under Pair your iPhone if shown." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Android 上打开 NotiSync 的 iPhone 标签页并开启桥接；如有显示，请在“配对 iPhone”下选择“iOS 应用”。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 Android 上開啟 NotiSync 的 iPhone 分頁並啟用橋接；如有顯示，請在「配對 iPhone」下選擇「iOS App」。"
+          }
+        }
+      }
+    },
     "“My device” shares notifications, dismissals, and trust. “Someone else’s” only syncs their name." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3496,12 +3784,18 @@
         }
       }
     },
-    "iPhone SSH Key" : {
+    "%@ SSH Key" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "iPhone SSH 密钥"
+            "value" : "%@ SSH 密钥"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ SSH 金鑰"
           }
         }
       }
@@ -4144,12 +4438,18 @@
         }
       }
     },
-    "NotiSync needs permission to show notifications from your other devices on this iPhone." : {
+    "NotiSync needs permission to show notifications from your other devices on this %@." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "NotiSync 需要通知权限，才能在这部 iPhone 上显示来自您其他设备的通知。"
+            "value" : "NotiSync 需要通知权限，才能在此 %@ 上显示来自您其他设备的通知。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 需要通知權限，才能在此 %@ 上顯示來自您其他裝置的通知。"
           }
         }
       }
@@ -4237,6 +4537,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开设置"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "開啟設定"
           }
         }
       }
@@ -5322,6 +5628,12 @@
             "state" : "translated",
             "value" : "重试"
           }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重試"
+          }
         }
       }
     },
@@ -5681,12 +5993,50 @@
         }
       }
     },
-    "See notifications from your other devices on this iPhone — private and end-to-end encrypted." : {
+    "See notifications from your other devices on this %@ — private and end-to-end encrypted." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在这部 iPhone 上查看来自您其他设备的通知 — 私密且端到端加密。"
+            "value" : "在此 %@ 上查看来自您其他设备的通知 — 私密且端到端加密。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此 %@ 上查看來自您其他裝置的通知 — 私密且點對點加密。"
+          }
+        }
+      }
+    },
+    "Authorize this %@ for screen sharing on the source device." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在源设备上授权此 %@ 进行屏幕共享。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請在來源裝置上授權此 %@ 進行螢幕分享。"
+          }
+        }
+      }
+    },
+    "Connect this %@ and the source device to the same Wi-Fi network." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请将此 %@ 与源设备连接到同一 Wi-Fi 网络。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "請將此 %@ 與來源裝置連線至同一個 Wi-Fi 網路。"
           }
         }
       }

@@ -3,7 +3,10 @@ package net.extrawdw.apps.notisync.ios
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattServer
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -16,9 +19,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
@@ -38,9 +42,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Orchestrates the iOS BLE bridge: advertises this phone as a BLE peripheral soliciting ANCS (so it
- * appears in the iPhone's Bluetooth settings), accepts the iPhone's connection via a GATT server, then runs
- * an [IosGattClient] over that link to consume notifications. Each ANCS notification is fetched, resolved to
- * an app name + icon, filtered by the user's per-app opt-in, and dispatched to local display and/or the mesh.
+ * appears in the iPhone's Bluetooth settings) and attaches an [IosGattClient] to the selected bonded
+ * endpoint. Each ANCS notification is fetched, resolved to an app name and icon, filtered by the
+ * user's per-app opt-in, and dispatched to local display and/or the mesh.
  *
  * The same link also mirrors the iPhone's now-playing media over AMS (the media sibling of ANCS): the GATT
  * client forwards Entity Updates into [amsBridge], which maintains one media card ([AmsNotificationMapper]),
@@ -61,6 +65,7 @@ class IosBridgeManager(
     private val uploadAsset: suspend (ByteArray, AssetRole, String, ClientId) -> PrivateAssetRef?,
     private val registry: IosAppRegistry,
     private val deviceRepo: IosDeviceRepository,
+    private val onRepeatedAdvertisingLoss: (appModeFailed: Boolean) -> Unit,
     private val localDisplayEnabled: () -> Boolean,
     private val meshMirrorEnabled: () -> Boolean,
     /** iPhone media (AMS) mirroring master toggle; gates the now-playing card, not the subscription. */
@@ -79,6 +84,7 @@ class IosBridgeManager(
     private val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     private var gattServer: BluetoothGattServer? = null
+    private var serverCallback: BluetoothGattServerCallback? = null
     private var advertiser: BluetoothLeAdvertiser? = null
 
     @Volatile
@@ -87,9 +93,19 @@ class IosBridgeManager(
     @Volatile
     private var connectedDevice: BluetoothDevice? = null
 
-    @Volatile
-    private var lastDevice: BluetoothDevice? =
-        null // the iPhone we were last talking to, for targeted re-attach
+    private val lePeers = mutableMapOf<String, BluetoothDevice>()
+    private val newLeLinks = mutableMapOf<String, Long>()
+    private val serverLinks = mutableSetOf<String>()
+    private var enrolling: BluetoothDevice? = null
+    private var setupDevice: BluetoothDevice? = null
+        set(value) {
+            field = value
+            deviceRepo.setSetupPeer(value?.let { IosCompanion.Peer(it.address, it.name) })
+        }
+
+    private var appAdvertising = false
+    private val setupPreferences = IosCompanion.setupPreferences(context)
+    private var selectedPeer: IosPeerSelection? = null
 
     @Volatile
     private var receiverRegistered = false
@@ -107,6 +123,7 @@ class IosBridgeManager(
     private val attachRunnable = Runnable { tryAttachConnected() }
     private val peripheralRestartRunnable = Runnable { reopenPeripheral() }
     private var reconnectAttempts = 0
+    private val advertisingLosses = AdvertisingLossTracker()
 
     // True only during a full peripheral reset ([restartPeripheral] → settle → [reopenPeripheral]): the GATT
     // server is briefly closed, so any stray client-gone callback must NOT schedule a re-attach in the gap.
@@ -166,7 +183,11 @@ class IosBridgeManager(
     private val liveCallKeys = java.util.Collections.synchronizedSet(HashSet<String>())
 
     fun start() {
-        if (running) return // idempotent: the foreground service may re-deliver onStartCommand
+        if (advertisingLosses.tripped) return // The switch is being persisted and the service stopped.
+        if (running) {
+            refreshSelection()
+            return
+        }
         if (!hasPermissions()) {
             Log.w(
                 TAG,
@@ -203,8 +224,8 @@ class IosBridgeManager(
                     "maxAdvData=${runCatching { a.leMaximumAdvertisingDataLength }.getOrNull()}",
         )
         advertiser = adv
-        openGattServer()
-        startAdvertising(adv)
+        deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+        openPeripheral(adv)
         registerBondReceiver()
         running = true
         reconnectAttempts = 0
@@ -212,16 +233,18 @@ class IosBridgeManager(
         // Re-arm CompanionDeviceManager presence (if the user set up background auto-connect) so the OS keeps
         // waking us when the iPhone is in range — survives reboots / process death.
         IosCompanion.observePresence(context)
-        deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+        tryAttachConnected()
     }
 
     fun stop() {
+        advertisingLosses.reset()
         running = false
+        clearEnrollment()
+        setupDevice = null
         resettingPeripheral = false
         handler.removeCallbacks(attachRunnable)
         handler.removeCallbacks(peripheralRestartRunnable)
-        runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
-        advertisingSet = null
+        stopAdvertising()
         if (receiverRegistered) runCatching { context.unregisterReceiver(bondReceiver) }.also {
             receiverRegistered = false
         }
@@ -234,7 +257,7 @@ class IosBridgeManager(
         // ACL up and the iPhone showing "Connected"/Sharing), then close the server.
         runCatching { connectedDevice?.let { gattServer?.cancelConnection(it) } }
         connectedDevice = null
-        runCatching { gattServer?.close() }; gattServer = null
+        runCatching { gattServer?.close() }; gattServer = null; serverCallback = null
         deviceRepo.clearDeviceName()
         deviceRepo.setStatus(IosBridgeStatus.OFF)
     }
@@ -253,13 +276,25 @@ class IosBridgeManager(
             .setInterval(AdvertisingSetParameters.INTERVAL_MEDIUM)
             .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
             .build()
-        // A 128-bit solicitation UUID nearly fills the 31-byte legacy advert, so the name goes in the scan response.
-        val data = AdvertiseData.Builder()
-            .addServiceSolicitationUuid(ParcelUuid(Ancs.SERVICE_UUID))
-            .build()
+        // Both setup modes use a 128-bit UUID. Put the name in the scan response when it fits.
+        val data = IphoneAppSetup.advertisement(appAdvertising)
         val scanResponse = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
+            .setIncludeDeviceName((adapter?.name?.toByteArray()?.size ?: 0) <= 29)
             .build()
+        val callback = object : AdvertisingSetCallback() {
+            override fun onAdvertisingSetStarted(set: AdvertisingSet?, txPower: Int, status: Int) {
+                if (advertisingCallback !== this) return
+                if (status == ADVERTISE_SUCCESS) {
+                    advertisingSet = set
+                    Log.i(TAG, "iPhone advertising started (appSetup=$appAdvertising)")
+                } else {
+                    Log.w(TAG, "iPhone advertising failed: status=$status")
+                    deviceRepo.setStatus(IosBridgeStatus.ERROR)
+                }
+            }
+        }
+        advertisingCallback = callback
+        advertisingLosses.advertisingRequested(SystemClock.elapsedRealtime())
         runCatching {
             adv.startAdvertisingSet(
                 params,
@@ -267,7 +302,7 @@ class IosBridgeManager(
                 scanResponse,
                 null,
                 null,
-                advertisingSetCallback
+                callback
             )
         }
             .onFailure {
@@ -277,139 +312,228 @@ class IosBridgeManager(
             }
     }
 
-    private val advertisingSetCallback = object : AdvertisingSetCallback() {
-        override fun onAdvertisingSetStarted(set: AdvertisingSet?, txPower: Int, status: Int) {
-            if (status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
-                advertisingSet = set
-                Log.i(TAG, "ANCS advertising set started (txPower=$txPower)")
-            } else {
-                Log.w(TAG, "ANCS advertising set start failed: status=$status")
-                deviceRepo.setStatus(IosBridgeStatus.ERROR)
-            }
-        }
+    private var advertisingCallback: AdvertisingSetCallback? = null
 
-        // Decisive diagnostic: if the controller rejected the advertising data (the solicitation UUID), status
-        // here is non-zero. SUCCESS but still nothing on air (per nRF Connect) ⇒ a deeper stack bug on this device.
-        override fun onAdvertisingDataSet(set: AdvertisingSet?, status: Int) {
-            Log.i(TAG, "ANCS advertising data set: status=$status (0=success)")
-        }
-
-        override fun onScanResponseDataSet(set: AdvertisingSet?, status: Int) {
-            Log.i(TAG, "ANCS scan response set: status=$status (0=success)")
-        }
-
-        override fun onAdvertisingSetStopped(set: AdvertisingSet?) {
-            advertisingSet = null
-        }
+    private fun stopAdvertising() {
+        advertisingLosses.advertisingStopped()
+        val callback = advertisingCallback
+        advertisingCallback = null
+        advertisingSet = null
+        if (callback != null) runCatching { advertiser?.stopAdvertisingSet(callback) }
     }
 
-    private fun openGattServer() {
+    private fun openPeripheral(adv: BluetoothLeAdvertiser) {
+        val useApp = setupPreferences.usesApp
+        if (appAdvertising != useApp) advertisingLosses.reset()
+        appAdvertising = useApp
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        // An empty GATT server: it exists only to accept the iPhone's connection. ANCS data flows the other
-        // way — over our GATT *client* to the iPhone's server — once we're connected (independent GATT roles).
-        gattServer = mgr.openGattServer(context, gattServerCallback)
-    }
+        // In app setup, wait for service registration before allowing the iPhone to discover us.
+        val callback = object : BluetoothGattServerCallback() {
+            override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+                handler.post {
+                    if (!running || serverCallback !== this || service.uuid != IphoneAppSetup.serviceId) return@post
+                    if (status == BluetoothGatt.GATT_SUCCESS) startAdvertising(adv)
+                    else deviceRepo.setStatus(IosBridgeStatus.ERROR)
+                }
+            }
 
-    private val gattServerCallback = object : BluetoothGattServerCallback() {
-        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            Log.i(
-                TAG,
-                "GATT server conn: ${device.address} status=$status newState=$newState bond=${device.bondState}"
-            )
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> onCentralConnected(device)
-                BluetoothProfile.STATE_DISCONNECTED ->
-                    if (device.address == connectedDevice?.address) onCentralDisconnected()
+            override fun onCharacteristicReadRequest(device: BluetoothDevice, requestId: Int, offset: Int,
+                                                     characteristic: BluetoothGattCharacteristic) {
+                handler.post {
+                    if (!running || serverCallback !== this) return@post
+                    val status = when {
+                        characteristic.uuid != IphoneAppSetup.versionId -> BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED
+                        offset !in 0..1 -> BluetoothGatt.GATT_INVALID_OFFSET
+                        else -> BluetoothGatt.GATT_SUCCESS
+                    }
+                    val value = if (status == BluetoothGatt.GATT_SUCCESS && offset == 0) byteArrayOf(1) else byteArrayOf()
+                    if (gattServer?.sendResponse(device, requestId, status, offset, value) != true ||
+                        status != BluetoothGatt.GATT_SUCCESS) return@post
+                    updateSelection()
+                    if (device.address.equals(selectedPeer?.address, ignoreCase = true)) attach(listOf(device))
+                    else setupDevice = device
+                }
+            }
+
+            override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+                handler.post {
+                    if (!running || resettingPeripheral || serverCallback !== this) return@post
+                    when (newState) {
+                        BluetoothProfile.STATE_CONNECTED -> if (status == BluetoothGatt.GATT_SUCCESS) {
+                            serverLinks.add(device.address)
+                            if (leLinkState(device) == true || device.address in newLeLinks) {
+                                lePeers[device.address] = device
+                                publishLePeers()
+                            }
+                            updateSelection()
+                            attach(listOf(device))
+                        }
+                        BluetoothProfile.STATE_DISCONNECTED -> {
+                            serverLinks.remove(device.address)
+                            if (leLinkState(device) == false) lePeers.remove(device.address)
+                            publishLePeers()
+                            if (device == setupDevice && leLinkState(device) != true) setupDevice = null
+                            if (device == connectedDevice && leLinkState(device) != true) {
+                                onCentralDisconnected()
+                                scheduleAttach()
+                            }
+                        }
+                    }
+                }
             }
         }
+        serverCallback = callback
+        val server = mgr.openGattServer(context, callback)
+        gattServer = server
+        if (server == null || (appAdvertising && !server.addService(IphoneAppSetup.service()))) {
+            deviceRepo.setStatus(IosBridgeStatus.ERROR)
+        } else if (!appAdvertising) startAdvertising(adv)
     }
 
-    private fun onCentralConnected(device: BluetoothDevice) {
-        if (client != null) return // already bridging one iPhone
-        // Only bridge a BONDED central. Our advert is connectable, so any nearby BLE central — the user's other
-        // phones, earbuds, watches — connects to our GATT server too. ANCS only ever lives behind an encrypted/
-        // bonded link, so an unbonded central is never the paired iPhone. Bridging one anyway grabbed this single
-        // client slot, spammed it with createBond() pairing requests, and locked out the real (bonded) iPhone —
-        // which then shows "Connected" on iOS but never reaches SHARING until the user toggles iPhone Bluetooth.
-        // Pairing a NEW iPhone is the CDM "Set up" flow (IosCompanion.bondDevice) or iOS Settings; both bond at
-        // the OS level, after which the iPhone reconnects bonded and lands here.
-        if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            Log.i(
-                TAG,
-                "ignoring unbonded central ${device.address} (bond=${device.bondState}) — not the paired iPhone"
-            )
-            return
+    /** Called on the main thread when setup or Forget changes the selected phone. */
+    fun refreshSelection() {
+        if (running && appAdvertising != setupPreferences.usesApp) {
+            stop()
+            start()
+        } else tryAttachConnected()
+    }
+
+    private fun clearEnrollment() {
+        enrolling = null
+        newLeLinks.clear()
+        serverLinks.clear()
+        lePeers.clear()
+        deviceRepo.setConnectedLePeers(emptyList())
+    }
+
+    private fun publishLePeers() {
+        val peers = lePeers.values.map { device ->
+            IosCompanion.Peer(device.address, device.name,
+                newServerLinkAt = newLeLinks[device.address].takeIf { device.address in serverLinks })
         }
-        handler.removeCallbacks(attachRunnable) // we're handling a connection; cancel any pending re-attach
-        Log.i(
-            TAG,
-            "iPhone connected as central: ${device.address} — opening ANCS GATT client back to it"
-        )
-        if (device.address != lastDevice?.address) deviceRepo.clearDeviceName() // a different iPhone: don't inherit the old name
+        deviceRepo.setConnectedLePeers(peers.sortedWith(compareBy({ it.name.orEmpty() }, { it.address })))
+    }
+
+    /** A Classic CDM selection cannot authenticate a separate, unbonded LE address. Pair only the
+     * live endpoint the Android user chose and persist it only after Bluetooth confirms the bond. */
+    fun chooseConnectedPeer(address: String): Boolean {
+        val device = lePeers[address] ?: return false
+        if (leLinkState(device) == false) return false
+        if (device.hasBridgeBond()) {
+            acceptBondedEndpoint(device)
+            return true
+        }
+        val requested = runCatching {
+            device.bondState == BluetoothDevice.BOND_BONDING || createLeBond(device)
+        }.getOrDefault(false)
+        if (requested) {
+            enrolling = device
+            deviceRepo.setStatus(IosBridgeStatus.NEEDS_PAIRING)
+        }
+        return requested
+    }
+
+    private fun acceptBondedEndpoint(device: BluetoothDevice) {
+        enrolling = null
+        IosCompanion.saveConfirmedAddress(context, device.address)
+        updateSelection()
+        attach(listOf(device))
+    }
+
+    /** Bind the encrypted read to the user's on-screen confirmation, including separate LE identities. */
+    fun confirmSetupPeer(address: String): Boolean {
+        val device = setupDevice ?: return false
+        if (device.address != address || leLinkState(device) == false || !device.hasBridgeBond()) return false
+        acceptBondedEndpoint(device)
+        return true
+    }
+
+    fun retrySharing() {
+        if (deviceRepo.status.value == IosBridgeStatus.NO_ANCS) client?.rediscoverServices()
+    }
+
+    private fun updateSelection() {
+        val next = IosCompanion.selectedPeer(context)
+        if (selectedPeer == next) return
+        selectedPeer = next
+        enrolling = null
+        if (next?.address == setupDevice?.address) setupDevice = null
+        reconnectAttempts = 0
+        handler.removeCallbacks(attachRunnable)
+        if (client != null) onCentralDisconnected()
+        // Deferred dismissals and content keys belong to the previous phone.
+        keyToContent.clear()
+        pendingClear.clear()
+    }
+
+    private fun attach(candidates: List<BluetoothDevice>) {
+        if (client != null) return
+        val device = selectedPeer?.findBonded(candidates, BluetoothDevice::getAddress) {
+            runCatching { it.bondState == BluetoothDevice.BOND_BONDED }.getOrDefault(false)
+        } ?: return
+
+        if (leLinkState(device) == false) return
+        handler.removeCallbacks(attachRunnable)
         connectedDevice = device
-        lastDevice = device
-        deviceRepo.setDeviceName(runCatching { device.name }.getOrNull())
-        val c = IosGattClient(
+        refreshDeviceName(device)
+        lateinit var c: IosGattClient
+        c = IosGattClient(
             context = context,
             device = device,
             onStatus = { status ->
-                deviceRepo.setStatus(status)
-                if (status == IosBridgeStatus.SHARING) {
-                    reconnectAttempts = 0
-                    handler.removeCallbacks(attachRunnable)
-                    refreshDeviceName(device)
+                if (client === c) {
+                    deviceRepo.setStatus(status)
+                    if (status == IosBridgeStatus.SHARING) {
+                        reconnectAttempts = 0
+                        handler.removeCallbacks(attachRunnable)
+                        refreshDeviceName(device)
+                    }
                 }
             },
-            onSourceEvent = ::onSourceEvent,
-            onBondNeeded = { ensureBond(device) },
-            onClientGone = ::onClientGone,
+            onSourceEvent = { if (client === c) onSourceEvent(it) },
+            onBondNeeded = { if (client === c) ensureBond(device) },
+            onDeviceName = { name ->
+                if (client === c) {
+                    IosCompanion.saveGapName(context, device.address, name)
+                    refreshDeviceName(device)
+                    Log.i(TAG, "Read the selected iPhone’s GAP device name")
+                }
+            },
+            onClientGone = {
+                if (client === c) {
+                    onCentralDisconnected()
+                    scheduleAttach()
+                }
+            },
             scope = scope,
-            onAmsEntityUpdate = amsBridge::onEntityUpdate,
-            onAmsSupportedCommands = amsBridge::onSupportedCommands,
+            onAmsEntityUpdate = { if (client === c) amsBridge.onEntityUpdate(it) },
+            onAmsSupportedCommands = { if (client === c) amsBridge.onSupportedCommands(it) },
         )
         client = c
-        c.connect()
+        try {
+            c.connect()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Bluetooth permission revoked while connecting", e)
+            onCentralDisconnected()
+            deviceRepo.setStatus(IosBridgeStatus.ERROR)
+        }
     }
 
-    /**
-     * The GATT client to the iPhone terminally disconnected or failed to connect. Drop it, then schedule a
-     * re-attach: if the iPhone is still connected at the stack level (e.g. a transient client failure right
-     * after a process restart, where no fresh GATT-server connect event will arrive), we re-attach to it
-     * with backoff instead of getting stuck waiting. Also handles stacks that surface the iPhone under
-     * rotating random addresses. No-op if the iPhone has genuinely disconnected (a reconnect will retrigger us).
-     */
-    private fun onClientGone() {
-        connectedDevice?.let {
-            lastDevice = it
-        } // remember the iPhone so we re-attach to IT, not another bonded device
-        client = null
-        connectedDevice = null
-        // AMS subscriptions died with the GATT client — drop the now-playing card; a successful
-        // re-attach re-subscribes and repopulates it from iOS's initial attribute burst.
-        amsBridge.onGone()
-        scheduleAttach()
-    }
+    // GATT server callbacks and the system connection list can both refer to a Classic-only ACL.
+    private fun leLinkState(device: BluetoothDevice): Boolean? =
+        if (Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            runCatching { device.isConnected(BluetoothDevice.TRANSPORT_LE) }.getOrDefault(false)
+        } else null
 
-    /** Re-attach to the iPhone we were last talking to, but only if it's still connected at the stack level. */
+    /** Android reports system-wide GATT connections, including accessories using other profiles. */
     private fun tryAttachConnected() {
-        if (client != null || !running) return
-        val want = lastDevice?.address ?: return
-        val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
-        val connected = (
-                runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT_SERVER) }.getOrDefault(
-                    emptyList()
-                ) +
-                        runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT) }.getOrDefault(
-                            emptyList()
-                        )
-                ).distinctBy { it.address }
-        val target = connected.firstOrNull { it.address == want }
-            ?: return // gone → a fresh connect event will retrigger us
-        Log.i(
-            TAG,
-            "re-attaching to still-connected iPhone ${target.address} (attempt $reconnectAttempts)"
-        )
-        onCentralConnected(target)
+        if (!running || resettingPeripheral) return
+        updateSelection()
+        val manager = context.getSystemService(BluetoothManager::class.java) ?: return
+        val connected = IosCompanion.connectedGattDevices(manager)
+        for (device in connected) if (leLinkState(device) == true) lePeers[device.address] = device
+        publishLePeers()
+        if (client == null && selectedPeer != null) attach(connected)
     }
 
     /**
@@ -446,6 +570,8 @@ class IosBridgeManager(
             "notifications still not sharing after $reconnectAttempts recovery attempts — full peripheral reset"
         )
         resettingPeripheral = true
+        clearEnrollment()
+        setupDevice = null
         reconnectAttempts = 0
         handler.removeCallbacks(attachRunnable)
         handler.removeCallbacks(peripheralRestartRunnable)
@@ -453,9 +579,8 @@ class IosBridgeManager(
         amsBridge.onGone()
         runCatching { connectedDevice?.let { gattServer?.cancelConnection(it) } }
         connectedDevice = null
-        runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
-        advertisingSet = null
-        runCatching { gattServer?.close() }; gattServer = null
+        stopAdvertising()
+        runCatching { gattServer?.close() }; gattServer = null; serverCallback = null
         deviceRepo.clearDeviceName()
         deviceRepo.setStatus(IosBridgeStatus.CONNECTING) // transient "recovering"; reopen flips to ADVERTISING
         // Let the stack release the server + advertiser before reopening — a synchronous reopen races the close
@@ -480,9 +605,9 @@ class IosBridgeManager(
         }
         Log.i(TAG, "peripheral reopen: re-opening GATT server + advertising")
         advertiser = adv
-        openGattServer()
-        startAdvertising(adv)
         deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+        openPeripheral(adv)
+        tryAttachConnected()
     }
 
     private fun onCentralDisconnected() {
@@ -498,15 +623,21 @@ class IosBridgeManager(
     }
 
     private fun refreshDeviceName(device: BluetoothDevice) {
-        deviceRepo.setDeviceName(runCatching { device.name }.getOrNull())
+        if (device == connectedDevice) deviceRepo.setDeviceName(
+            IosCompanion.selectedDeviceName(context, selectedPeer) ?: context.getString(net.extrawdw.apps.notisync.R.string.mirror_ios_device_fallback)
+        )
     }
 
     // ---- Bonding ----
 
+    private fun createLeBond(device: BluetoothDevice) = if (Build.VERSION.SDK_INT >= 37) {
+        device.createBond(BluetoothDevice.TRANSPORT_LE)
+    } else device.createBond()
+
     private fun ensureBond(device: BluetoothDevice) {
         Log.i(TAG, "ensureBond: bondState=${device.bondState}")
-        if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            val started = runCatching { device.createBond() }.getOrDefault(false)
+        if (!device.hasBridgeBond()) {
+            val started = runCatching { createLeBond(device) }.getOrDefault(false)
             Log.i(TAG, "createBond() -> $started")
         } else {
             client?.onBonded()
@@ -515,21 +646,56 @@ class IosBridgeManager(
 
     private val bondReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
-            if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
             val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
             val device =
                 intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED || intent.action == BluetoothDevice.ACTION_ACL_DISCONNECTED) {
+                if (!running || resettingPeripheral || device == null ||
+                    intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT, BluetoothDevice.TRANSPORT_AUTO) != BluetoothDevice.TRANSPORT_LE) return
+                if (intent.action == BluetoothDevice.ACTION_ACL_CONNECTED) {
+                    // Capture at arrival. Either phone can finish bonding before the access dialog returns.
+                    if (!device.hasBridgeBond()) newLeLinks.putIfAbsent(device.address, android.os.SystemClock.elapsedRealtime())
+                    lePeers[device.address] = device
+                    updateSelection()
+                    attach(listOf(device))
+                } else {
+                    newLeLinks.remove(device.address)
+                    serverLinks.remove(device.address)
+                    lePeers.remove(device.address)
+                    if (device == enrolling) {
+                        enrolling = null
+                        if (client == null) deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+                    }
+                }
+                publishLePeers()
+                return
+            }
+            if (device != null && device == enrolling) {
+                if (state == BluetoothDevice.BOND_BONDED && device.hasBridgeBond()) acceptBondedEndpoint(device)
+                else if (state == BluetoothDevice.BOND_NONE) {
+                    enrolling = null
+                    if (client == null) deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+                }
+                return
+            }
             Log.i(TAG, "bond state -> $state for ${device?.address}")
-            if (state == BluetoothDevice.BOND_BONDED) client?.onBonded()
+            if (device == null || !device.address.equals(selectedPeer?.address, ignoreCase = true)) return
+            when (state) {
+                BluetoothDevice.BOND_BONDED -> if (client == null) tryAttachConnected() else if (device.hasBridgeBond()) client?.onBonded()
+                BluetoothDevice.BOND_NONE -> if (device == connectedDevice) onCentralDisconnected()
+            }
         }
     }
 
     private fun registerBondReceiver() {
         if (receiverRegistered) return
-        // ACTION_BOND_STATE_CHANGED is a protected system broadcast; NOT_EXPORTED still receives it.
+        // Bluetooth runs under its own UID and sends this protected system broadcast.
         ContextCompat.registerReceiver(
-            context, bondReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
+            context, bondReceiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED).apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            },
+            ContextCompat.RECEIVER_EXPORTED,
         )
         receiverRegistered = true
     }
@@ -546,17 +712,26 @@ class IosBridgeManager(
                     Log.i(TAG, "Bluetooth on — restarting ANCS advertising"); start()
                 }
 
-                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> onBluetoothOff()
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                    val repeatedLoss = advertisingLosses.adapterWentDown(SystemClock.elapsedRealtime())
+                    onBluetoothOff()
+                    if (repeatedLoss) {
+                        Log.w(TAG, "Repeated Bluetooth adapter losses after advertising (appSetup=$appAdvertising)")
+                        setupPreferences.recordRepeatedLoss()
+                        if (!appAdvertising) advertisingLosses.reset() // Resume in app mode on STATE_ON.
+                        onRepeatedAdvertisingLoss(appAdvertising)
+                    }
+                }
             }
         }
     }
 
     private fun registerAdapterReceiver() {
         if (adapterReceiverRegistered) return
-        // ACTION_STATE_CHANGED is a protected system broadcast; NOT_EXPORTED still receives it.
+        // The Bluetooth process sends this protected system broadcast under its own UID.
         ContextCompat.registerReceiver(
             context, adapterReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
+            ContextCompat.RECEIVER_EXPORTED,
         )
         adapterReceiverRegistered = true
     }
@@ -567,15 +742,16 @@ class IosBridgeManager(
         if (!running && advertisingSet == null && client == null) return // already torn down
         Log.i(TAG, "Bluetooth off — tearing down BLE; will re-advertise when it returns")
         running = false
+        clearEnrollment()
+        setupDevice = null
         resettingPeripheral = false
         handler.removeCallbacks(attachRunnable)
         handler.removeCallbacks(peripheralRestartRunnable)
-        runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
-        advertisingSet = null
+        stopAdvertising()
         client?.close(); client = null
         connectedDevice = null
         amsBridge.onGone()
-        runCatching { gattServer?.close() }; gattServer = null
+        runCatching { gattServer?.close() }; gattServer = null; serverCallback = null
         deviceRepo.clearDeviceName() // link torn down — drop the stale name
         deviceRepo.setStatus(IosBridgeStatus.ERROR)
     }
@@ -593,7 +769,10 @@ class IosBridgeManager(
                 " flags=0x${packet.eventFlags.toString(16)} pos=${packet.hasPositiveAction}" +
                 " neg=${packet.hasNegativeAction} preExisting=${packet.isPreExisting}"
         )
+        val sourcePhone = iphoneId()
+        val sourceName = deviceRepo.deviceName.value
         scope.launch {
+            if (client !== c) return@launch
             if (packet.isRemoved) {
                 onRemoved(packet); return@launch
             }
@@ -640,13 +819,14 @@ class IosBridgeManager(
             var notif = AncsNotificationMapper.map(
                 clientId,
                 record,
-                iphoneId(),
-                deviceRepo.deviceName.value,
+                sourcePhone,
+                sourceName,
                 androidPkg,
                 System.currentTimeMillis(),
             )
             // Only ship the app icon as an asset when mirroring — a local render resolves the icon directly.
             if (toMesh) notif = attachAppIcon(notif, androidPkg)
+            if (client !== c) return@launch
             uidToKey[packet.notificationUid] = notif.sourceKey
             // Track a live call (ringing or active) so its dismissal can't decline / hang up the real call on the
             // iPhone (see [liveCallKeys]); only the explicit Decline / Hang up button may.
@@ -731,9 +911,10 @@ class IosBridgeManager(
         if (sourceKey in liveCallKeys) return
         val uid = parts[3].toIntOrNull() ?: return
         // Live this session (same UID still mapped to this exact key) on our connected iPhone → clear now.
-        if (client != null && parts[1] == iphoneId() && uidToKey[uid] == sourceKey) {
+        val c = client
+        if (c != null && parts[1] == iphoneId() && uidToKey[uid] == sourceKey) {
             selfClearedUids.add(uid) // our own clear → its EVENT_REMOVED must not re-broadcast to the mesh
-            scope.launch { runCatching { client?.performAction(uid, Ancs.ACTION_NEGATIVE) } }
+            scope.launch { runCatching { c.performAction(uid, Ancs.ACTION_NEGATIVE) } }
             return
         }
         // Otherwise defer: clear it when it next replays. Keyed by content (not the rotating UID) so it matches

@@ -1,11 +1,14 @@
 package net.extrawdw.apps.notisync.ios
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.annotation.StringRes
@@ -24,6 +27,8 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
+import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
+import net.extrawdw.apps.notisync.navigation.MenuDestination
 
 /**
  * Foreground service (type `connectedDevice`) that hosts the iOS bridge, so the BLE link to the iPhone
@@ -77,7 +82,7 @@ class IosBridgeService : Service() {
         if (graph != null && repo != null) {
             startBridge(graph, repo)
         } else {
-            scope.launch {
+            scope.launch(Dispatchers.Main.immediate) {
                 val ready = app.awaitGraphReady() ?: run {
                     stopSelf(startId)
                     return@launch
@@ -169,6 +174,35 @@ class IosBridgeService : Service() {
         private const val CHANNEL_ID = "notisync.ancs"
         private const val GROUP_ID = "notisync.ios.bridge"
         private const val NOTIF_ID = 0x4E43 // "NC" — Notification Consumer
+        private const val ALERT_CHANNEL_ID = "notisync.ancs.alerts"
+
+        internal fun notifyAdvertisingLoss(context: Context, bridgeDisabled: Boolean) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) return
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    ALERT_CHANNEL_ID,
+                    context.getString(R.string.ios_bridge_alert_channel),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply { enableVibration(true) }
+            )
+            val open = PendingIntent.getActivity(context, NOTIF_ID,
+                AppMenuShortcuts.intentFor(context, MenuDestination.IPHONE),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val title = if (bridgeDisabled) R.string.ios_bridge_disabled_title else R.string.ios_bridge_fallback_title
+            val message = context.getString(if (bridgeDisabled) R.string.ios_bridge_disabled_message else R.string.ios_bridge_fallback_message)
+            val alert = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_ancs_bridge)
+                .setContentTitle(context.getString(title))
+                .setContentText(message)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            // A tagged notification survives removal of the untagged foreground-service notification.
+            manager.notify(ALERT_CHANNEL_ID, NOTIF_ID, alert)
+        }
 
         /** Leading-edge throttle window for status→notification reposts: the first change posts at once,
          *  then a burst is coalesced to one post per window — keeping us under the system's per-package

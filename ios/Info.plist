@@ -41,6 +41,8 @@
 	<false/>
 	<key>NFCReaderUsageDescription</key>
 	<string>NotiSync reads a nearby Android device's emulated card to exchange end-to-end-encrypted pairing information.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>NotiSync connects to the Android bridge you choose so this device can share system notifications with it.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_notisync-screen._tcp</string>
@@ -58,6 +60,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>bluetooth-central</string>
 		<string>remote-notification</string>
 		<string>fetch</string>
 	</array>

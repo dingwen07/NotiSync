@@ -48,6 +48,7 @@ class IosGattClient(
     private val onStatus: (IosBridgeStatus) -> Unit,
     private val onSourceEvent: (Ancs.SourcePacket) -> Unit,
     private val onBondNeeded: () -> Unit,
+    private val onDeviceName: (String) -> Unit,
     /** Invoked once this client terminally disconnects or fails to connect, so the manager can drop it and
      *  let the next inbound connection (possibly under a rotated random address) spawn a fresh client. */
     private val onClientGone: () -> Unit = {},
@@ -85,9 +86,8 @@ class IosGattClient(
     @Volatile
     private var amsPendingWrite: AmsPendingWrite? = null
 
-    /** The one in-flight Entity Attribute read (mutex-guarded; completed by `onCharacteristicRead`). */
-    @Volatile
-    private var amsCharacteristicRead: CompletableDeferred<ByteArray?>? = null
+    private class CharacteristicRead(val uuid: UUID, val result: CompletableDeferred<ByteArray?> = CompletableDeferred())
+    @Volatile private var characteristicRead: CharacteristicRead? = null
 
     private class AmsPendingWrite(val uuid: UUID) {
         val deferred = CompletableDeferred<Boolean>()
@@ -100,7 +100,8 @@ class IosGattClient(
 
     // CCCD-enable retry state: the characteristic whose subscribe is in flight, and how many times we've
     // retried it while bonded (the link's encryption settling after cross-transport key derivation).
-    private var inFlightChar: BluetoothGattCharacteristic? = null
+    private var subscription = AncsSubscription.UNAVAILABLE
+    private val subscribe = Runnable { gatt?.let(::writeSubscription) }
     private var cccdAttempts = 0
     private var discoveryAttempts = 0
 
@@ -144,7 +145,6 @@ class IosGattClient(
      *  STATE_DISCONNECTED callback can both land). */
     private fun teardown() {
         if (torndown) return
-        torndown = true
         close()
         onClientGone()
     }
@@ -170,17 +170,21 @@ class IosGattClient(
         // already exists and a direct connect attaches immediately. autoConnect=true is the slow background-
         // reconnect path and fails with status 135 on some stacks (e.g. Samsung). Reconnection is iPhone-driven
         // (it re-connects to our advertisement), so we don't need autoConnect here. Matches working ANCS clients.
-        gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+        gatt = device.connectGatt(
+            context, false, callback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK, handler
+        )
     }
 
     fun close() {
+        if (torndown) return
+        torndown = true
         handler.removeCallbacksAndMessages(null)
         amsJob.cancel()
         amsReset()
         runCatching { gatt?.close() }
         gatt = null
         pending = null
-        inFlightChar = null
+        subscription = AncsSubscription.UNAVAILABLE
     }
 
     /** Drop AMS characteristic refs + fail any in-flight AMS op (fresh discovery / teardown). */
@@ -191,7 +195,7 @@ class IosGattClient(
         amsSetupStarted = false
         amsDescriptorWrite?.complete(false)
         amsPendingWrite?.deferred?.complete(false)
-        amsCharacteristicRead?.complete(null)
+        characteristicRead?.result?.complete(null)
     }
 
     /** Actively terminate the link, then release — for an intentional shutdown (the user disabled the bridge),
@@ -307,14 +311,26 @@ class IosGattClient(
                 (withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { pendingWrite.deferred.await() } ?: false)
             amsPendingWrite = null
             if (!named) return null
-            val pendingRead = CompletableDeferred<ByteArray?>()
-            amsCharacteristicRead = pendingRead
-            if (!g.readCharacteristic(ea)) {
-                amsCharacteristicRead = null; return null
-            }
-            val bytes = withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { pendingRead.await() }
-            amsCharacteristicRead = null
-            return bytes?.let { String(it, Charsets.UTF_8) }
+            return readValue(g, ea)?.toString(Charsets.UTF_8)
+        }
+    }
+
+    /** Caller holds cpMutex across the read so GAP, ANCS and AMS operations share the same ATT queue. */
+    private suspend fun readValue(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic): ByteArray? {
+        val read = CharacteristicRead(characteristic.uuid)
+        characteristicRead = read
+        return try {
+            if (g.readCharacteristic(characteristic)) withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { read.result.await() }
+            else null
+        } finally { characteristicRead = null }
+    }
+
+    private fun readGapDeviceName(g: BluetoothGatt) {
+        val name = g.getService(GENERIC_ACCESS)?.getCharacteristic(DEVICE_NAME) ?: return
+        val host = scope ?: return
+        CoroutineScope(host.coroutineContext + amsJob).launch {
+            val value = cpMutex.withLock { readValue(g, name) }?.toString(Charsets.UTF_8)?.trim()?.takeIf { it.isNotEmpty() }
+            if (value != null) handler.post { if (gatt === g && !torndown) onDeviceName(value) }
         }
     }
 
@@ -409,46 +425,61 @@ class IosGattClient(
         result
     }
 
-    // CCCDs still to enable for the current attempt (Data Source first, so the backlog can be answered).
-    private val toEnable = ArrayDeque<BluetoothGattCharacteristic>()
-
-    private fun beginEnable(g: BluetoothGatt) {
-        cccdAttempts = 0
-        toEnable.clear()
-        dataSource?.let { toEnable.add(it) }
-        notificationSource?.let { toEnable.add(it) }
-        enableNext(g)
+    private fun waitForSharing() {
+        subscription = AncsSubscription.UNAVAILABLE
+        reachedSharing = false
+        handler.removeCallbacks(subscribe)
+        handler.removeCallbacks(watchdog)
+        handler.removeCallbacks(disconnectFallback)
+        onStatus(IosBridgeStatus.NO_ANCS)
     }
 
-    private fun enableNext(g: BluetoothGatt) {
-        val ch = toEnable.removeFirstOrNull() ?: run {
-            inFlightChar = null
-            reachedSharing = true
-            handler.removeCallbacks(watchdog)
-            Log.i(TAG, "ANCS subscribed — SHARING")
-            onStatus(IosBridgeStatus.SHARING)
-            // ANCS is fully enabled (its CCCD chain is done) — now bring up AMS on the same link.
-            startAmsSetup()
-            return
+    private fun writeSubscription(g: BluetoothGatt) {
+        val ch = when (subscription) {
+            AncsSubscription.DATA_SOURCE -> dataSource
+            AncsSubscription.NOTIFICATION_SOURCE -> notificationSource
+            else -> null
+        } ?: return
+        val cccd = ch.getDescriptor(Ancs.CCCD) ?: return waitForSharing()
+        if (!g.setCharacteristicNotification(ch, true) ||
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) != BluetoothStatusCodes.SUCCESS
+        ) {
+            retrySubscription(authorizationPending = false)
         }
-        inFlightChar = ch
-        g.setCharacteristicNotification(ch, true)
-        val cccd = ch.getDescriptor(Ancs.CCCD) ?: return enableNext(g)
-        g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
     }
 
-    /** Re-queue the in-flight characteristic and retry its CCCD write after [delayMs], without re-discovering. */
-    private fun retryEnableAfter(delayMs: Long) {
-        inFlightChar?.let { toEnable.addFirst(it) }
-        handler.postDelayed({ gatt?.let { enableNext(it) } }, delayMs)
+    private fun retrySubscription(authorizationPending: Boolean) {
+        if (++cccdAttempts <= MAX_CCCD_ATTEMPTS) {
+            handler.removeCallbacks(subscribe)
+            handler.postDelayed(subscribe, CCCD_RETRY_BASE_MS * cccdAttempts)
+        } else if (authorizationPending) {
+            waitForSharing()
+        } else {
+            // A transport/write failure still needs the session watchdog.
+            onStatus(IosBridgeStatus.ERROR)
+        }
+    }
+
+    /** Also used when sharing permission changes without a Service Changed indication from iOS. */
+    fun rediscoverServices() {
+        val g = gatt ?: return
+        handler.removeCallbacks(subscribe)
+        subscription = AncsSubscription.UNAVAILABLE
+        reachedSharing = false
+        discoveryAttempts = 0
+        onStatus(IosBridgeStatus.CONNECTING)
+        armWatchdog(CONNECT_DEADLINE_MS)
+        if (!g.discoverServices()) Log.w(TAG, "ANCS re-discovery did not start")
     }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (g !== gatt || torndown) return
             Log.i(TAG, "client conn: status=$status newState=$newState bond=${device.bondState}")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    onStatus(IosBridgeStatus.CONNECTING); g.requestMtu(MTU)
+                    onStatus(IosBridgeStatus.CONNECTING)
+                    if (!g.requestMtu(MTU)) g.discoverServices()
                 }
                 // Covers both a clean disconnect and a failed connect (newState=DISCONNECTED with an error
                 // status like 133/135). Tear down and tell the manager so it can retry the next connection.
@@ -459,6 +490,7 @@ class IosGattClient(
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            if (g !== gatt || torndown) return
             Log.i(TAG, "mtu=$mtu status=$status — discovering services")
             // Plain discover — do NOT refresh() here. On this Samsung, refresh() right before discovery makes the
             // first discovery come back EMPTY, so we'd loop several times before ANCS shows up. A fresh link's OTA
@@ -468,13 +500,25 @@ class IosGattClient(
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (g !== gatt || torndown) return
+            handler.removeCallbacks(subscribe)
+            subscription = AncsSubscription.UNAVAILABLE
+            reachedSharing = false
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                onStatus(IosBridgeStatus.ERROR)
+                return // the discovery watchdog recovers transport failures
+            }
             Log.i(
                 TAG,
                 "services discovered status=$status: [${g.services.joinToString { it.uuid.toString() }}]"
             )
+            // Invalidate characteristics from the previous database, including when ANCS disappeared.
+            controlPoint = null
+            notificationSource = null
+            dataSource = null
             // Re-capture AMS from this (possibly fresh) database. Failing any in-flight AMS op first keeps a
             // service-changed re-discovery from stranding a waiter on a stale characteristic. AMS setup itself
-            // runs once ANCS reaches SHARING (see enableNext) so it never interleaves with the enable chain.
+            // runs once ANCS reaches SHARING so it never interleaves with the enable chain.
             amsReset()
             g.getService(Ams.SERVICE_UUID)?.let { ams ->
                 amsRemoteCommand = ams.getCharacteristic(Ams.REMOTE_COMMAND)
@@ -485,7 +529,7 @@ class IosGattClient(
             if (svc == null) {
                 // ANCS is hidden until the link is encrypted. If we're not bonded, bond and re-discover; only
                 // give up (NO_ANCS) once it's still absent after bonding (the peer isn't sharing notifications).
-                if (device.bondState != BluetoothDevice.BOND_BONDED) {
+                if (!device.hasBridgeBond()) {
                     Log.i(TAG, "ANCS not visible yet & not bonded — requesting bond")
                     onStatus(IosBridgeStatus.NEEDS_PAIRING)
                     armWatchdog(PAIRING_DEADLINE_MS) // user-paced: give them time to accept pairing
@@ -518,7 +562,7 @@ class IosGattClient(
                         TAG,
                         "ANCS still absent after $MAX_DISCOVERY_ATTEMPTS refreshes — peer not sharing"
                     )
-                    onStatus(IosBridgeStatus.NO_ANCS)
+                    if (g.services.isEmpty()) onStatus(IosBridgeStatus.ERROR) else waitForSharing()
                 }
                 return
             }
@@ -529,7 +573,13 @@ class IosGattClient(
             notificationSource = svc.getCharacteristic(Ancs.NOTIFICATION_SOURCE)
             // Let the LE link's encryption establish (especially after cross-transport key derivation from a
             // classic bond) before the first CCCD write, so the iPhone doesn't reject the subscribe.
-            handler.postDelayed({ gatt?.let { beginEnable(it) } }, ENABLE_SETTLE_MS)
+            cccdAttempts = 0
+            subscription = AncsSubscription.begin(
+                hasDataSource = dataSource?.getDescriptor(Ancs.CCCD) != null,
+                hasNotificationSource = notificationSource?.getDescriptor(Ancs.CCCD) != null,
+            )
+            if (subscription == AncsSubscription.UNAVAILABLE) waitForSharing()
+            else handler.postDelayed(subscribe, ENABLE_SETTLE_MS)
         }
 
         override fun onDescriptorWrite(
@@ -537,6 +587,7 @@ class IosGattClient(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
+            if (g !== gatt || torndown) return
             // AMS CCCD writes are awaited suspend-style (amsSubscribe), not chained like the ANCS enables —
             // route them out before the ANCS retry logic (which would otherwise re-drive ANCS state on them).
             val chUuid = descriptor.characteristic?.uuid
@@ -545,36 +596,28 @@ class IosGattClient(
                 amsDescriptorWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
                 return
             }
-            Log.i(TAG, "CCCD write status=$status")
+            if (descriptor.uuid != Ancs.CCCD || chUuid != subscription.characteristic || chUuid == null) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 cccdAttempts = 0
-                enableNext(g)
-                return
-            }
-            if (device.bondState != BluetoothDevice.BOND_BONDED) {
-                // Not bonded yet — pair, then onBonded() re-discovers + re-enables once it completes.
-                Log.i(TAG, "CCCD rejected & not bonded — requesting bond")
+                subscription = subscription.acknowledged(chUuid)
+                if (subscription == AncsSubscription.SHARING) {
+                    reachedSharing = true
+                    handler.removeCallbacks(watchdog)
+                    onStatus(IosBridgeStatus.SHARING)
+                    readGapDeviceName(g)
+                    startAmsSetup()
+                } else {
+                    writeSubscription(g)
+                }
+            } else if (!device.hasBridgeBond()) {
                 onStatus(IosBridgeStatus.NEEDS_PAIRING)
-                armWatchdog(PAIRING_DEADLINE_MS) // user-paced: give them time to accept pairing
+                armWatchdog(PAIRING_DEADLINE_MS)
                 onBondNeeded()
-                return
-            }
-            // Bonded but rejected (status 14 = encryption not yet settled on this LE link — common right after
-            // cross-transport key derivation from a classic bond). Retry the SAME write after a growing delay;
-            // do NOT re-discover (that thrashes the link and the iPhone terminates it). Bounded.
-            if (++cccdAttempts <= MAX_CCCD_ATTEMPTS) {
-                val delay = CCCD_RETRY_BASE_MS * cccdAttempts
-                Log.i(
-                    TAG,
-                    "CCCD rejected while bonded — retry #$cccdAttempts in ${delay}ms (waiting for encryption)"
-                )
-                retryEnableAfter(delay)
             } else {
-                Log.w(
-                    TAG,
-                    "CCCD still failing after $MAX_CCCD_ATTEMPTS attempts — link won't encrypt; giving up"
-                )
-                onStatus(IosBridgeStatus.NO_ANCS)
+                Log.i(TAG, "ANCS subscription rejected (status=$status)")
+                retrySubscription(authorizationPending = status == BluetoothGatt.GATT_INSUFFICIENT_AUTHORIZATION ||
+                    status == BluetoothGatt.GATT_INSUFFICIENT_AUTHENTICATION ||
+                    status == BluetoothGatt.GATT_INSUFFICIENT_ENCRYPTION)
             }
         }
 
@@ -608,18 +651,18 @@ class IosGattClient(
             value: ByteArray,
             status: Int
         ) {
-            // Only the AMS Entity Attribute is ever read (the truncated-value fetch).
-            if (ch.uuid == Ams.ENTITY_ATTRIBUTE) {
-                amsCharacteristicRead?.complete(if (status == BluetoothGatt.GATT_SUCCESS) value else null)
-            }
+            if (g !== gatt || torndown) return
+            characteristicRead?.takeIf { it.uuid == ch.uuid }?.result?.complete(
+                value.takeIf { status == BluetoothGatt.GATT_SUCCESS }
+            )
         }
 
         override fun onServiceChanged(g: BluetoothGatt) {
             // The iPhone's GATT database changed (services can come and go — AMS in particular is not
             // guaranteed to be present at connect time). Re-discover so a late-appearing service is picked
             // up; onServicesDiscovered re-runs the ANCS enable chain (idempotent) and re-arms AMS.
-            Log.i(TAG, "GATT services changed — re-discovering")
-            if (!g.discoverServices()) Log.w(TAG, "re-discovery after service change failed to start")
+            if (g !== gatt || torndown) return
+            rediscoverServices()
         }
     }
 
@@ -658,6 +701,8 @@ class IosGattClient(
     }
 
     private companion object {
+        val GENERIC_ACCESS: UUID = UUID.fromString("00001800-0000-1000-8000-00805f9b34fb")
+        val DEVICE_NAME: UUID = UUID.fromString("00002a00-0000-1000-8000-00805f9b34fb")
         const val TAG = "IosGattClient"
         const val MTU = 517
         const val REQUEST_TIMEOUT_MS = 5_000L

@@ -25,6 +25,7 @@ class IosCompanionService : CompanionDeviceService() {
         if (!IosBridgeService.hasPermissions(applicationContext)) return
         val graph = (application as? NotiSyncApp)?.graphIfReady ?: return
         if (graph.settings.iosBridgeEnabled.value != true) return
+        if (IosCompanion.selectedPeer(this)?.associationId != associationInfo.id) return
         runCatching { IosBridgeService.start(applicationContext) }
             .onFailure {
                 Log.w(
