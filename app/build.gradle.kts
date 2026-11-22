@@ -59,6 +59,9 @@ android {
         buildConfig = true
         aidl = true
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     packaging {
         resources.pickFirsts += "META-INF/LICENSE.md"
         resources.pickFirsts += "META-INF/DEPENDENCIES"
