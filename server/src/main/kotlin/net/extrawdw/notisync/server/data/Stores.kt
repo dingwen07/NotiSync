@@ -1,5 +1,6 @@
 package net.extrawdw.notisync.server.data
 
+import kotlinx.coroutines.yield
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
@@ -7,9 +8,12 @@ import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
+import org.jetbrains.exposed.v1.core.Column
+import org.jetbrains.exposed.v1.core.LongColumnType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.greater
+import org.jetbrains.exposed.v1.core.inSubQuery
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
@@ -17,13 +21,42 @@ import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 import org.slf4j.LoggerFactory
 import java.util.Base64
+import kotlin.time.TimeSource
 
 private val b64e: Base64.Encoder = Base64.getEncoder()
 private val b64d: Base64.Decoder = Base64.getDecoder()
+
+// Both SQLite tables expose rowid, including private_assets with its composite primary key.
+// Selecting rowids through the expiry index avoids reading ciphertext to find expired rows.
+private const val EXPIRY_BATCH_SIZE = 32
+private val cleanupLog = LoggerFactory.getLogger("notisync.cleanup")
+
+private suspend fun NotiSyncDb.purgeExpired(expiresAt: Column<Long>, cutoff: Long): Int {
+    val table = expiresAt.table
+    val rowId = Column(table, "rowid", LongColumnType())
+    var total = 0
+    while (true) {
+        val start = TimeSource.Monotonic.markNow()
+        val removed = tx {
+            val batch = table.select(rowId).where { expiresAt less cutoff }
+                .orderBy(expiresAt).limit(EXPIRY_BATCH_SIZE)
+            table.deleteWhere { rowId inSubQuery batch }
+        }
+        total += removed
+        if (removed > 0) {
+            cleanupLog.info(
+                "expiry batch table={} rows={} durationMs={}", table.tableName, removed, start.elapsedNow().inWholeMilliseconds,
+            )
+        }
+        if (removed < EXPIRY_BATCH_SIZE) return total
+        yield() // The transaction has committed. Other requests can use the connection between batches.
+    }
+}
 
 /** A stored NS2 key-epoch: the verbatim identity-signed blob plus the columns the broker gates on. */
 data class StoredEpoch(
@@ -335,9 +368,7 @@ class RelayStore(private val db: NotiSyncDb) {
         }
     }
 
-    suspend fun purgeExpired(now: Long): Int = db.tx {
-        Relay.deleteWhere { Relay.expiresAt less now }
-    }
+    suspend fun purgeExpired(now: Long): Int = db.purgeExpired(Relay.expiresAt, now)
 
     private fun relayItem(row: org.jetbrains.exposed.v1.core.ResultRow): RelayItem = RelayItem(
         id = row[Relay.id],
@@ -373,7 +404,5 @@ class PrivateAssetStore(private val db: NotiSyncDb) {
             .firstOrNull()?.let { b64d.decode(it[PrivateAssets.dataB64]) }
     }
 
-    suspend fun purgeExpired(now: Long): Int = db.tx {
-        PrivateAssets.deleteWhere { PrivateAssets.expiresAt less now }
-    }
+    suspend fun purgeExpired(now: Long): Int = db.purgeExpired(PrivateAssets.expiresAt, now)
 }

@@ -1334,6 +1334,48 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun multiRecipientSendAwaitsConcurrentPushesAndCollectsEveryOutcome() = runBlocking {
+        withTimeout(10_000) {
+            val dbFile = File.createTempFile("notisync-mixed-push", ".db").also { it.deleteOnExit() }
+            val config = ServerConfig.fromEnv().copy(dbPath = dbFile.absolutePath)
+            val db = NotiSyncDb.connect(config)
+            val signers = List(5) { SoftwareIdentitySigner.generate() }
+            val ids = signers.map { it.clientId }
+            val outcomes = ids.zip(listOf(
+                PushOutcome.DELIVERED, PushOutcome.TRANSIENT_FAILURE, PushOutcome.ROUTE_INVALID,
+                PushOutcome.DELIVERED, PushOutcome.PERMANENT_FAILURE,
+            )).toMap()
+            val fourthStarted = CompletableDeferred<Unit>()
+            val relay = RelayStore(db)
+            val push = object : PushTransport {
+                override suspend fun wake(route: StoredRoute, data: Map<String, String>, urgency: Urgency): PushOutcome {
+                    // Every provider call must see its committed relay item, even while peers are in flight.
+                    assertNotNull(relay.getByMessage(route.clientId, data.getValue("mid")))
+                    if (route.clientId == ids[0]) fourthStarted.await()
+                    if (route.clientId == ids[3]) fourthStarted.complete(Unit)
+                    return outcomes.getValue(route.clientId)
+                }
+            }
+            val routes = RouteStore(db)
+            val broker = Broker(routes, relay, PrivateAssetStore(db), EpochStore(db), WebSocketHub(), push, config)
+            val recipients = signers.map { signer ->
+                val hpke = Hpke.generateKeyPair()
+                val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+                assertTrue(broker.uploadKeyEpoch(keyEpochBlob(signer, op, hpke, epoch = 1)))
+                assertEquals(1, broker.uploadRoutes(listOf(routeBlob(signer, "test-token"))))
+                RecipientKey(signer.clientId, hpke.publicKeyset)
+            }
+            val envelope = EnvelopeCrypto.seal(
+                signer = SoftwareIdentitySigner.generate(), typ = MessageType.DATA_SYNC, bodyPlaintext = byteArrayOf(1),
+                recipients = recipients, messageId = "mixed", seq = 1, createdAt = 1,
+            )
+            val result = broker.send(ProtocolCodec.encodeToCbor(envelope), envelope, Urgency.NORMAL)
+            assertEquals(SendResult(true, listOf(ids[0], ids[3]), listOf(ids[4]), listOf(ids[2]), listOf(ids[1])), result)
+            assertTrue(routes.routesFor(ids[2]).isEmpty())
+        }
+    }
+
+    @Test
     fun highApnsPrefersPushToOnlineWebSocket_andFallsBackWhenPushFails() = runBlocking {
         val tmp = File.createTempFile("notisync-high-apns-route", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)

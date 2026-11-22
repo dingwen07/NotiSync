@@ -1,5 +1,12 @@
 package net.extrawdw.notisync.server.broker
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flatMapMerge
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.Envelope
@@ -29,6 +36,7 @@ import net.extrawdw.notisync.server.data.StoredEpoch
 import net.extrawdw.notisync.server.data.StoredRoute
 import org.slf4j.LoggerFactory
 import java.util.Base64
+import kotlin.time.TimeSource
 
 /**
  * Broker orchestration: verify signed key-epochs/routes (never decrypt), store-and-forward encrypted
@@ -154,133 +162,152 @@ class Broker(
         return accepted
     }
 
+    private enum class Delivery { DELIVERED, MISSING_ROUTE, INVALID_ROUTE, STALE_ROUTE }
+
+    private val deliverySlots = Semaphore(MAX_CONCURRENT_DELIVERIES)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun send(envelopeBytes: ByteArray, envelope: Envelope, urgency: Urgency): SendResult {
-        val delivered = mutableListOf<ClientId>()
-        val missing = mutableListOf<ClientId>()
-        val invalid = mutableListOf<ClientId>()
-        val stale = mutableListOf<ClientId>()
         val expiresAt = System.currentTimeMillis() + config.relayTtlMillis
-
-        for (recipient in envelope.recipientIds()) {
-            // Strip foreign key material so a device's payload doesn't grow with the roster size.
-            val recipientBytes = envelopeFor(recipient, envelope, envelopeBytes)
-
-            // Persist for store-and-forward (removed on explicit ack), regardless of live state.
-            val relayItem = relay.add(
-                recipient,
-                envelope.messageId,
-                recipientBytes,
-                urgency.name,
-                envelope.typ.name,
-                expiresAt,
-            )
-
-            // Pending-dismissal hint for the iOS NSE's piggyback drain. A dismissal must never ride its
-            // own alert push — an NSE miss (BFU after reboot, memory kill, timeout) falls back to
-            // displaying the payload, and a dismissal has no legitimate visible form — so it stays a quiet
-            // envelope, and the NOTIFICATION alert advertises how many DISMISSALs are queued; the NSE
-            // pulls exactly those (DATA_SYNC isn't worth NSE budget and stays for the app's drain paths).
-            val pendingDismissals =
-                if (envelope.typ == MessageType.NOTIFICATION) relay.countPending(recipient, MessageType.DISMISSAL.name)
-                else 0L
-
-            suspend fun deliverLive(): Boolean {
-                if (!hub.isOnline(recipient)) return false
-                val frame = ProtocolCodec.encodeToJson(
-                    WsMessage(
-                        kind = WsKind.DELIVER,
-                        envelopeB64 = b64.encodeToString(recipientBytes),
-                        acceptedAt = relayItem.createdAt,
-                    )
-                )
-                if (hub.deliverText(recipient, frame)) {
-                    delivered.add(recipient)
-                    return true
+        val recipients = envelope.recipientIds().distinct()
+        val outcomes = recipients.asFlow().flatMapMerge(MAX_DELIVERIES_PER_SEND) { recipient ->
+            flow {
+                val outcome = deliverySlots.withPermit {
+                    deliverTo(recipient, envelopeBytes, envelope, urgency, expiresAt)
                 }
-                return false
+                emit(recipient to outcome)
             }
+        }.toList().toMap()
 
-            var loadedCandidates: List<StoredRoute>? = null
-            suspend fun pushCandidates(): List<StoredRoute> {
-                loadedCandidates?.let { return it }
-                return routes.routesFor(recipient)
-                    .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
-                    .sortedBy { pushPreference(it.transport) }
-                    .also { loadedCandidates = it }
-            }
-
-            // A live WebSocket write is not a client ACK. During iOS backgrounding the broker may still see
-            // the socket briefly after the app can no longer surface a sheet, so suppressing a HIGH APNs alert
-            // here can hide the request until the next foreground reconnect. Prefer the explicit APNs/NSE
-            // contract for HIGH traffic; retain WebSocket-first delivery everywhere else.
-            val pushBeforeLive = urgency == Urgency.HIGH &&
-                pushCandidates().any { it.transport == TransportType.APNS }
-            if (!pushBeforeLive && deliverLive()) continue
-
-            val candidates = pushCandidates()
-            if (candidates.isEmpty()) {
-                if (pushBeforeLive && deliverLive()) continue
-                missing.add(recipient)
-                continue
-            }
-            var anyTransient = false
-            var anyInvalid = false
-            var pushed = false
-            for (route in candidates) {
-                val budget = inlineBudgetFor(route)
-                val payload = buildPushData(
-                    envelope.messageId,
-                    envelope.typ,
-                    recipientBytes,
-                    budget,
-                    pendingDismissals,
-                    relayItem.createdAt,
-                )
-                val outcome = push.wake(route, payload.data, urgency)
-                log.info(
-                    "push wake transport={} recipient={} mid={} inline={} ctChars={} budget={} urgency={} outcome={}",
-                    route.transport,
-                    recipient.shortForm(),
-                    envelope.messageId,
-                    payload.inline,
-                    payload.ctChars,
-                    budget,
-                    urgency,
-                    outcome,
-                )
-                when (outcome) {
-                    PushOutcome.DELIVERED -> {
-                        delivered.add(recipient)
-                        pushed = true
-                        break
-                    }
-                    PushOutcome.ROUTE_INVALID -> {
-                        routes.invalidate(recipient, route.transport)
-                        anyInvalid = true
-                    }
-                    PushOutcome.TRANSIENT_FAILURE -> anyTransient = true
-                    // Route token is fine but the push can't succeed as sent (permanent), or the transport
-                    // is off (disabled): either way the relay still holds the item for a future WS pickup.
-                    PushOutcome.PERMANENT_FAILURE, PushOutcome.DISABLED -> Unit
-                }
-            }
-            if (pushed) continue
-            // APNs may be disabled or temporarily unavailable. The durable relay still owns the message, and
-            // an actually live app is a useful fallback once the user-visible push route could not accept it.
-            if (pushBeforeLive && deliverLive()) continue
-            // A just-invalidated route is the more actionable signal, so it outranks a transient blip on a
-            // different candidate; anything else (permanent/disabled/none) leaves the item for relay + WS.
-            when {
-                anyInvalid -> invalid.add(recipient)
-                anyTransient -> stale.add(recipient)
-                else -> missing.add(recipient)
-            }
-        }
+        // Keep each response list in envelope order even when deliveries finish out of order.
+        fun recipientsWith(outcome: Delivery) = recipients.filter { outcomes.getValue(it) == outcome }
+        val result = SendResult(
+            accepted = true,
+            delivered = recipientsWith(Delivery.DELIVERED),
+            missingRoutes = recipientsWith(Delivery.MISSING_ROUTE),
+            invalidRoutes = recipientsWith(Delivery.INVALID_ROUTE),
+            staleRoutes = recipientsWith(Delivery.STALE_ROUTE),
+        )
         log.info(
             "send mid={} recipients={} delivered={} missing={} invalid={}",
-            envelope.messageId, envelope.recipients.size, delivered.size, missing.size, invalid.size,
+            envelope.messageId, recipients.size, result.delivered.size, result.missingRoutes.size, result.invalidRoutes.size,
         )
-        return SendResult(true, delivered, missing, invalid, stale)
+        return result
+    }
+
+    private suspend fun deliverTo(
+        recipient: ClientId,
+        envelopeBytes: ByteArray,
+        envelope: Envelope,
+        urgency: Urgency,
+        expiresAt: Long,
+    ): Delivery {
+        // Strip foreign key material so a device's payload doesn't grow with the roster size.
+        val recipientBytes = envelopeFor(recipient, envelope, envelopeBytes)
+
+        // Persist for store-and-forward (removed on explicit ack), regardless of live state.
+        val relayItem = relay.add(
+            recipient,
+            envelope.messageId,
+            recipientBytes,
+            urgency.name,
+            envelope.typ.name,
+            expiresAt,
+        )
+
+        // Pending-dismissal hint for the iOS NSE's piggyback drain. A dismissal must never ride its
+        // own alert push — an NSE miss (BFU after reboot, memory kill, timeout) falls back to
+        // displaying the payload, and a dismissal has no legitimate visible form — so it stays a quiet
+        // envelope, and the NOTIFICATION alert advertises how many DISMISSALs are queued; the NSE
+        // pulls exactly those (DATA_SYNC isn't worth NSE budget and stays for the app's drain paths).
+        val pendingDismissals =
+            if (envelope.typ == MessageType.NOTIFICATION) relay.countPending(recipient, MessageType.DISMISSAL.name)
+            else 0L
+
+        suspend fun deliverLive(): Boolean {
+            if (!hub.isOnline(recipient)) return false
+            val frame = ProtocolCodec.encodeToJson(
+                WsMessage(
+                    kind = WsKind.DELIVER,
+                    envelopeB64 = b64.encodeToString(recipientBytes),
+                    acceptedAt = relayItem.createdAt,
+                )
+            )
+            val start = TimeSource.Monotonic.markNow()
+            val sent = hub.deliverText(recipient, frame)
+            val elapsedMs = start.elapsedNow().inWholeMilliseconds
+            if (elapsedMs >= 100) {
+                log.info("slow WebSocket delivery mid={} durationMs={} sent={}", envelope.messageId, elapsedMs, sent)
+            }
+            return sent
+        }
+
+        var loadedCandidates: List<StoredRoute>? = null
+        suspend fun pushCandidates(): List<StoredRoute> {
+            loadedCandidates?.let { return it }
+            return routes.routesFor(recipient)
+                .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
+                .sortedBy { pushPreference(it.transport) }
+                .also { loadedCandidates = it }
+        }
+
+        // A live WebSocket write is not a client ACK. During iOS backgrounding the broker may still see
+        // the socket briefly after the app can no longer surface a sheet, so suppressing a HIGH APNs alert
+        // here can hide the request until the next foreground reconnect. Prefer the explicit APNs/NSE
+        // contract for HIGH traffic; retain WebSocket-first delivery everywhere else.
+        val pushBeforeLive = urgency == Urgency.HIGH &&
+            pushCandidates().any { it.transport == TransportType.APNS }
+        if (!pushBeforeLive && deliverLive()) return Delivery.DELIVERED
+
+        val candidates = pushCandidates()
+        var anyTransient = false
+        var anyInvalid = false
+        for (route in candidates) {
+            val budget = inlineBudgetFor(route)
+            val payload = buildPushData(
+                envelope.messageId,
+                envelope.typ,
+                recipientBytes,
+                budget,
+                pendingDismissals,
+                relayItem.createdAt,
+            )
+            val start = TimeSource.Monotonic.markNow()
+            val outcome = push.wake(route, payload.data, urgency)
+            log.info(
+                "push wake transport={} recipient={} mid={} inline={} ctChars={} budget={} urgency={} outcome={} durationMs={}",
+                route.transport,
+                recipient.shortForm(),
+                envelope.messageId,
+                payload.inline,
+                payload.ctChars,
+                budget,
+                urgency,
+                outcome,
+                start.elapsedNow().inWholeMilliseconds,
+            )
+            when (outcome) {
+                PushOutcome.DELIVERED -> return Delivery.DELIVERED
+                PushOutcome.ROUTE_INVALID -> {
+                    routes.invalidate(recipient, route.transport)
+                    anyInvalid = true
+                }
+                PushOutcome.TRANSIENT_FAILURE -> anyTransient = true
+                // Route token is fine but the push can't succeed as sent (permanent), or the transport
+                // is off (disabled): either way the relay still holds the item for a future WS pickup.
+                PushOutcome.PERMANENT_FAILURE, PushOutcome.DISABLED -> Unit
+            }
+        }
+        // APNs may be disabled or temporarily unavailable. The durable relay still owns the message, and
+        // an actually live app is a useful fallback once the user-visible push route could not accept it.
+        if (pushBeforeLive && deliverLive()) return Delivery.DELIVERED
+        // A just-invalidated route is the more actionable signal, so it outranks a transient blip on a
+        // different candidate; anything else (permanent/disabled/none) leaves the item for relay + WS.
+        return when {
+            anyInvalid -> Delivery.INVALID_ROUTE
+            anyTransient -> Delivery.STALE_ROUTE
+            else -> Delivery.MISSING_ROUTE
+        }
     }
 
     /**
@@ -434,16 +461,19 @@ class Broker(
         relay.ackManyByMessage(clientId, messageIds)
 
     suspend fun purgeExpired() {
+        val start = TimeSource.Monotonic.markNow()
         val now = System.currentTimeMillis()
         val r = relay.purgeExpired(now)
         val a = assets.purgeExpired(now)
         // Retain a retired key-epoch one relay-TTL past notAfter so a peer can still pull it to verify an
         // in-flight relayed envelope from that epoch; the latest epoch is always kept (floor + current key).
         val e = epochs.purgeExpired(now, config.relayTtlMillis)
-        if (r > 0 || a > 0 || e > 0) log.info("purged expired relay={} assets={} epochs={}", r, a, e)
+        log.info("purged expired relay={} assets={} epochs={} durationMs={}", r, a, e, start.elapsedNow().inWholeMilliseconds)
     }
 
     private companion object {
+        const val MAX_DELIVERIES_PER_SEND = 4
+        const val MAX_CONCURRENT_DELIVERIES = 16
         const val ASSET_ID_BYTES = 24 // 192-bit opaque id; rejects content-derived/short ids
         val EMPTY_DEK = ByteArray(0) // placeholder sealedDek for non-target recipients
 

@@ -2,6 +2,7 @@ package net.extrawdw.notisync.server.data
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import com.zaxxer.hikari.metrics.IMetricsTracker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.server.ServerConfig
@@ -10,7 +11,9 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.SchemaUtils
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.slf4j.LoggerFactory
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Recoverable broker cache. Binary values are stored base64-encoded in TEXT columns to keep the
@@ -79,11 +82,21 @@ class NotiSyncDb(private val database: Database) {
         withContext(Dispatchers.IO) { suspendTransaction(database) { block() } }
 
     companion object {
+        private val log = LoggerFactory.getLogger(NotiSyncDb::class.java)
+
         fun connect(config: ServerConfig): NotiSyncDb {
             File(config.dbPath).absoluteFile.parentFile?.mkdirs()
             val ds = HikariDataSource(HikariConfig().apply {
                 jdbcUrl = "jdbc:sqlite:${config.dbPath}"
                 driverClassName = "org.sqlite.JDBC"
+                setMetricsTrackerFactory { _, _ ->
+                    object : IMetricsTracker {
+                        override fun recordConnectionAcquiredNanos(elapsedAcquiredNanos: Long) {
+                            val ms = TimeUnit.NANOSECONDS.toMillis(elapsedAcquiredNanos)
+                            if (ms >= 100) log.info("slow database connection acquisition durationMs={}", ms)
+                        }
+                    }
+                }
                 maximumPoolSize = 1 // single writer -> serialized writes, no SQLITE_BUSY
                 connectionInitSql = "PRAGMA journal_mode=WAL"
             })
@@ -105,6 +118,8 @@ class NotiSyncDb(private val database: Database) {
                     "CREATE INDEX IF NOT EXISTS relay_recipient_created_id_idx " +
                         "ON ${Relay.tableName} (recipient_id, created_at, id)"
                 )
+                exec("CREATE INDEX IF NOT EXISTS relay_expires_at_idx ON ${Relay.tableName} (expires_at)")
+                exec("CREATE INDEX IF NOT EXISTS private_assets_expires_at_idx ON ${PrivateAssets.tableName} (expires_at)")
             }
             return NotiSyncDb(database)
         }
