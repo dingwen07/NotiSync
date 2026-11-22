@@ -51,6 +51,9 @@
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
     <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+    <uses-feature
         android:name="android.hardware.wifi.aware"
         android:required="false" />
     <!-- Required for CompanionDeviceManager (background auto-connect); without it getSystemService returns null. -->
