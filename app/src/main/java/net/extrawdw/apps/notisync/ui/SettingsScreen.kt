@@ -88,6 +88,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
     val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
     val autoOpenOpenPgpRequest by graph.settings.autoOpenOpenPgpRequest.collectAsStateWithLifecycle()
     val autoOpenSshRequest by graph.settings.autoOpenSshRequest.collectAsStateWithLifecycle()
+    val shareIphoneAppChannels by graph.settings.shareIphoneAppChannels.collectAsStateWithLifecycle()
     val lockScreenPublicIdentity by graph.settings.lockScreenPublicIdentity.collectAsStateWithLifecycle()
     val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
     val shizukuStatus by graph.screenMirrorShizuku.status.collectAsStateWithLifecycle()
@@ -198,6 +199,13 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                     stringResource(R.string.settings_lock_screen_public_identity),
                     lockScreenPublicIdentity,
                 ) { scope.launch { graph.settings.setLockScreenPublicIdentity(it) } }
+            }
+            item {
+                ToggleRow(
+                    stringResource(R.string.settings_share_iphone_app_channels),
+                    shareIphoneAppChannels,
+                    description = stringResource(R.string.settings_share_iphone_app_channels_hint),
+                ) { scope.launch { graph.settings.setShareIphoneAppChannels(it) } }
             }
             item {
                 ToggleRow(
@@ -343,7 +351,8 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                                 }
                             }
                         },
-                        onResetChannels = { graph.resetNotificationChannels() },
+                        onResetChannels = graph::resetNotificationChannels,
+                        onDeleteAncsChannels = graph::deleteAncsChannels,
                         onResetSshKeyStore = { confirmSshKeyStoreReset = true },
                         onTamperSignature = {
                             graph.launchDurableTrustAction(context) {
@@ -508,7 +517,7 @@ private fun SettingsSectionHeader(@StringRes title: Int, topPadding: Dp = 8.dp) 
 }
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(label: String, checked: Boolean, description: String? = null, onChange: (Boolean) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -518,13 +527,12 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            label,
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 16.dp),
-            style = MaterialTheme.typography.bodyLarge,
-        )
+        Column(Modifier.weight(1f).padding(end = 16.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            if (description != null) {
+                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         Switch(
             checked = checked,
             onCheckedChange = onChange,

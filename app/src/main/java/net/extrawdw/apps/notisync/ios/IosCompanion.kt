@@ -56,7 +56,12 @@ object IosCompanion {
         val explicit = prefs.contains(ADDRESS)
         if (explicit && saved?.associationId == null) return saved
         val associations = runCatching { manager(context)?.myAssociations }.getOrNull().orEmpty()
-        return IosPeerSelection.resolve(saved, explicit, associations.mapNotNull { it.peer() })
+        val resolved = IosPeerSelection.resolve(saved, explicit, associations.mapNotNull { it.peer() })
+        // Helper enrollment stays closed across CDM revocation or temporary unavailability.
+        // The saved iPhone can request presence access again; Forget clears the address itself.
+        return if (resolved == null && saved != null && setupPreferences(context).usesApp) {
+            saved.copy(associationId = null)
+        } else resolved
     }
 
     private fun savePeer(context: Context, peer: IosPeerSelection?) {

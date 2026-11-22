@@ -136,6 +136,7 @@ fun DiagnosticsCard(
     onSendOversizedTest: () -> Unit,
     onRotateNow: () -> Unit,
     onResetChannels: () -> Int,
+    onDeleteAncsChannels: () -> Int,
     onResetSshKeyStore: () -> Unit,
     onTamperSignature: () -> Unit,
     modifier: Modifier = Modifier,
@@ -275,6 +276,9 @@ fun DiagnosticsCard(
             var channelsReset by remember { mutableStateOf<Int?>(null) }
             OutlinedButton(onClick = { channelsReset = onResetChannels() }) {
                 Text(stringResource(R.string.diagnostics_channels_reset))
+            }
+            OutlinedButton(onClick = { channelsReset = onDeleteAncsChannels() }) {
+                Text(stringResource(R.string.diagnostics_delete_ancs_channels))
             }
             channelsReset?.let {
                 Text(

@@ -992,12 +992,12 @@ private struct IosDevicesSection: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(verbatim: "via \(peer)")
+                Text("via \(peer)", comment: "Indicates the device that relayed an iOS notification. The argument is its name.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         } else {
-            Text(verbatim: "via \(peer)")
+            Text("via \(peer)", comment: "Indicates the device that relayed an iOS notification. The argument is its name.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -129,20 +129,10 @@ internal fun normalizeLiveProgress(progress: NotificationProgress): NativeLivePr
  * the group's display name is shown in the channel name (e.g. "alice@gmail.com · Mail") — when available
  * (requires a CompanionDeviceManager association; v1 falls back to the channel name / category / app label).
  *
- * iOS/ANCS-origin captures have no source channels, so their settings mirror the iOS mental model
- * instead: ONE group per bridged iPhone (named after the iPhone, e.g. "Dingwen's iPhone") holding ONE
- * channel per iOS app (named after the app, e.g. "WhatsApp") — the channel is the per-app switch, the
- * group the per-device bucket. Shade bundling is a separate mechanism and stays per app (see
- * RemoteNotificationPoster.receiverGroupKey).
- *
- * IDs are "{type}:{sourceClientId}:…" with type = group / channel (legacy: conversation); the second
- * ':'-segment is always the source client id so [gc] can prune by peer. Android-origin ids are
- * "{type}:{client}:{package}[:{source}]", and the per-app group's display name carries the source
- * device — e.g. "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system
- * settings. iOS-origin ids are "group:{client}:{originId}:_device" and
- * "channel:{client}:{originId}:{package}:_ios". Legacy per-app iOS groups/channels (Android-shaped,
- * ending ":{package}" / ":_default") are neither migrated nor pruned — they linger, no longer posted
- * to, until the user runs the reset-channels diagnostic ([deleteAll], which matches them by prefix).
+ * ANCS captures use one channel per app in a group for the originating iPhone. With sharing enabled,
+ * the settings group and its channels belong to the sending bridge across all its iPhones. Notification
+ * shade grouping still uses the individual iPhone. All mirror IDs retain the source client as their
+ * second segment so [gc] can prune channels when a peer is removed.
  */
 object MirrorChannels {
     // Sentinel id segments for the iOS/ANCS scheme, in the "_default" convention: a real package /
@@ -150,6 +140,7 @@ object MirrorChannels {
     // segment can never collide with a real value in that slot.
     private const val IOS_DEVICE_GROUP = "_device"
     private const val IOS_APP_CHANNEL = "_ios"
+    private const val IOS_SHARED_ORIGIN = "_shared"
 
     /** Matches IosBridgeManager.iphoneId()'s own fallback, for a bridged capture missing its origin id. */
     private const val IOS_FALLBACK_ORIGIN = "iphone"
@@ -163,7 +154,7 @@ object MirrorChannels {
     private fun channelId(client: ClientId, originId: String, pkg: String, src: String?) =
         if (originId.isEmpty()) "channel:${client.value}:$pkg:${src ?: "_default"}" else "channel:${client.value}:$originId:$pkg:${src ?: "_default"}"
 
-    /** One settings group per bridged iPhone. The trailing sentinel keeps the shape mechanically distinct
+    /** One settings group per iPhone or shared bridge. The trailing sentinel keeps the shape distinct
      *  from the legacy per-app "group:{client}:{originId}:{package}" it replaces. */
     private fun iosDeviceGroupId(client: ClientId, originId: String) =
         "group:${client.value}:$originId:$IOS_DEVICE_GROUP"
@@ -195,33 +186,32 @@ object MirrorChannels {
     private fun isIosOrigin(notif: CapturedNotification) =
         notif.originPlatform == OriginPlatform.IOS_ANCS
 
-    /** ANCS origin id for id-building; never empty (the mapper always sets one, but a foreign producer
-     *  might not). */
-    private fun ancsOriginId(notif: CapturedNotification) =
-        originId(notif).ifEmpty { IOS_FALLBACK_ORIGIN }
-
-    /** The settings group this capture files under. */
-    private fun groupIdFor(notif: CapturedNotification): String =
-        if (isIosOrigin(notif)) iosDeviceGroupId(notif.sourceClientId, ancsOriginId(notif))
-        else groupId(notif.sourceClientId, originId(notif), notif.packageName)
-
     /** Group label carries the source device so two devices running the same app stay distinct. */
     fun groupName(appLabel: String, deviceName: String?): String =
         deviceName?.takeIf { it.isNotBlank() }?.let { "$appLabel ($it)" } ?: appLabel
 
-    /** Create the group + channel this capture posts on; return the channel id.
-     *  Android-origin: per-app group + per-source-channel channel. iOS/ANCS: per-iPhone group + per-app channel. */
-    fun ensure(context: Context, notif: CapturedNotification, deviceName: String?): String {
+    /** Create or reuse this receiver's settings group and channel for the capture. */
+    @Synchronized
+    fun ensure(
+        context: Context,
+        notif: CapturedNotification,
+        sourceDeviceName: String?,
+        shareIphoneAppChannels: Boolean = false,
+    ): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val ios = isIosOrigin(notif)
-        val gid = groupIdFor(notif)
-        // An iOS group is labelled with the iPhone itself — originDeviceName only, NOT [deviceName], whose
-        // fallback is the bridging client's profile name and would title the iPhone's bucket after the
-        // Android phone that relayed it. Placeholder until the name is learned; the re-apply below heals it.
-        val groupLabel =
-            if (ios) notif.originDeviceName?.takeIf { it.isNotBlank() }
-                ?: context.getString(R.string.mirror_ios_device_fallback)
-            else groupName(notif.appLabel, deviceName)
+        val origin = originId(notif)
+        val iosScope = if (shareIphoneAppChannels) IOS_SHARED_ORIGIN else origin.ifEmpty { IOS_FALLBACK_ORIGIN }
+        val gid =
+            if (ios) iosDeviceGroupId(notif.sourceClientId, iosScope)
+            else groupId(notif.sourceClientId, origin, notif.packageName)
+        val groupLabel = when {
+            ios && shareIphoneAppChannels -> context.getString(
+                R.string.mirror_shared_iphone_apps, sourceDeviceName?.takeIf(String::isNotBlank) ?: notif.sourceClientId.shortForm(),
+            )
+            ios -> notif.originDeviceName?.takeIf(String::isNotBlank) ?: context.getString(R.string.mirror_ios_device_fallback)
+            else -> groupName(notif.appLabel, notif.originDeviceName ?: sourceDeviceName)
+        }
         // Group must exist before a channel references it; createNotificationChannel also updates
         // name/description and lowers importance on an existing channel (never raises — OS contract).
         // createNotificationChannelGroup re-applies the name every call, so a source-device rename
@@ -229,8 +219,8 @@ object MirrorChannels {
         // the capture) and the current device name (from the trust store) are known together.
         mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, groupLabel))
         val cid =
-            if (ios) iosAppChannelId(notif.sourceClientId, ancsOriginId(notif), notif.packageName)
-            else channelId(notif.sourceClientId, originId(notif), notif.packageName, notif.channelId)
+            if (ios) iosAppChannelId(notif.sourceClientId, iosScope, notif.packageName)
+            else channelId(notif.sourceClientId, origin, notif.packageName, notif.channelId)
         // Keep receiver settings authoritative after creation. A source ranking downgrade or an older
         // producer's quiet update must not permanently lower a shared message channel's importance.
         mgr.getNotificationChannel(cid)?.let { existing ->
@@ -275,6 +265,7 @@ object MirrorChannels {
     /** Retire legacy conversation channels and prune mirrors for peers that are no longer trusted.
      * New conversations use conversation shortcuts on the category channel; Android creates overrides
      * only through its conversation settings. The old receiver conversation overrides are discarded. */
+    @Synchronized
     fun gc(context: Context, validClientIds: Set<String>) {
         val mgr = context.getSystemService(NotificationManager::class.java)
         runCatching {
@@ -297,6 +288,7 @@ object MirrorChannels {
      * service channels alone. Android restores the previous settings if the same ID is recreated; this
      * operation does not reset importance. Returns the number of channels removed.
      */
+    @Synchronized
     fun deleteAll(context: Context): Int {
         val mgr = context.getSystemService(NotificationManager::class.java)
         return runCatching {
@@ -310,6 +302,20 @@ object MirrorChannels {
             }
             mirrored.size
         }.getOrDefault(0)
+    }
+
+    // Current per-iPhone and shared groups end in _device. Older ANCS groups put an app in that
+    // slot and used the bridge's 12-hex Bluetooth hash (or "iphone" fallback) for the origin.
+    // Match the owning group because Android apps can use arbitrary strings for source channel IDs.
+    private val ancsGroupId = Regex("group:[^:]+:(?:[^:]+:$IOS_DEVICE_GROUP|(?:[0-9a-f]{12}|$IOS_FALLBACK_ORIGIN):[^:]+)")
+
+    @Synchronized
+    fun deleteAncs(context: Context): Int {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        val groups = mgr.notificationChannelGroups.filter { ancsGroupId.matches(it.id) }
+        // Deleting a group also deletes all its member channels, including conversation overrides.
+        groups.forEach { mgr.deleteNotificationChannelGroup(it.id) }
+        return groups.sumOf { it.channels.size }
     }
 
     private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
@@ -414,6 +420,7 @@ class RemoteNotificationPoster(
     private val showPublicLockScreenIdentity: () -> Boolean = { true },
     /** Gives mirrored MEDIA notifications a real media session (the controls card); null renders them plainly. */
     private val mediaSessions: MirrorMediaSessions? = null,
+    private val shareIphoneAppChannels: () -> Boolean = { false },
 ) : MirrorRenderer {
 
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
@@ -449,8 +456,9 @@ class RemoteNotificationPoster(
     private fun renderGranted(notif: CapturedNotification, silent: Boolean, span: PerfSpan) {
         // Prefer the originating device's name (e.g. the bridged iPhone) over this sender's own name, so an
         // iOS mirror reads "WhatsApp (Dingwen's iPhone)", not the Android bridge phone's name.
-        val groupDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
-        val parentChannelId = MirrorChannels.ensure(context, notif, groupDeviceName)
+        val sourceDeviceName = deviceNameOf(notif.sourceClientId)
+        val groupDeviceName = notif.originDeviceName ?: sourceDeviceName
+        val parentChannelId = MirrorChannels.ensure(context, notif, sourceDeviceName, shareIphoneAppChannels())
         val receiverGroupKey = receiverGroupKey(notif)
         val receiverGroupTitle = MirrorChannels.groupName(notif.appLabel, groupDeviceName)
         if (notif.isGroupSummary) {

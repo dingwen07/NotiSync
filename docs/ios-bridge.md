@@ -39,8 +39,10 @@ if setup through Bluetooth Settings leaves it waiting.
 
 With either method, **Sharing notifications** on Android means the bridge has subscribed to ANCS.
 Keep the bridge enabled. CDM access lets Android wake NotiSync when it detects the iPhone nearby.
-With app-assisted setup, the iOS App also remembers the Android phone and reconnects when it
-returns to range.
+With app-assisted setup, Android stops advertising the bridge while the selected iPhone is connected.
+When the link drops, Android advertises for reconnection and the saved iPhone can reconnect in the
+background. Other iPhones do not see the paired Android phone under **Nearby devices** in NotiSync.
+To set up a different iPhone, tap **Forget** in NotiSync’s **iPhone** tab on Android.
 
 ## Mirror notifications with ANCS
 

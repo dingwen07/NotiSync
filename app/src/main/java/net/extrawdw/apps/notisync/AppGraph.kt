@@ -181,6 +181,7 @@ import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.time.ZonedDateTime
+import kotlin.time.Duration.Companion.milliseconds
 
 internal val Context.dataStore: DataStore<Preferences>
     get() = applicationContext.notiSyncDataStore
@@ -511,7 +512,8 @@ class AppGraph(private val app: Application) {
         mediaSessions = media
         poster = RemoteNotificationPoster(
             app, assetCache, resolver,
-            deviceNameOf = { id -> trust.displayName(id) },
+            deviceNameOf = { id -> if (id == identity.clientId) settings.deviceName.value else trust.displayName(id) },
+            shareIphoneAppChannels = { settings.shareIphoneAppChannels.value },
             appStoreIcons = appStoreIcons,
             scope = scope,
             callRinger = ringer,
@@ -966,7 +968,7 @@ class AppGraph(private val app: Application) {
                 if (!trust.quarantined.value) runCatching {
                     MirrorChannels.gc(
                         app,
-                        peers.map { it.clientId.value }.toSet()
+                        peers.map { it.clientId.value }.toSet() + identity.clientId.value
                     )
                 }
             }
@@ -1171,6 +1173,10 @@ class AppGraph(private val app: Application) {
         scope.launch { runCatching { rm.tick() } }
     }
 
+    fun resetNotificationChannels(): Int = MirrorChannels.deleteAll(app)
+
+    fun deleteAncsChannels(): Int = MirrorChannels.deleteAncs(app)
+
     /**
      * Diagnostics: force a single rotation right now, bypassing the 30-day schedule. Uses a zero pre-warm lead
      * so the immediately-following [RotationManager.tick] activates N+1 at once — the days-long overlap still
@@ -1179,10 +1185,6 @@ class AppGraph(private val app: Application) {
      * (target) epoch, or null if rotation is disabled or one is already in flight. Off the main thread —
      * operational keygen + broker publish run on IO.
      */
-    /** Diagnostics recovery: delete every mirrored notification channel so they rebuild at the right importance
-     *  (the OS can't raise a channel stranded at Silent — only a delete+recreate fixes it). Returns the count. */
-    fun resetNotificationChannels(): Int = MirrorChannels.deleteAll(app)
-
     suspend fun rotateNowDiagnostic(): Int? = withContext(Dispatchers.IO) {
         val rm = rotationManager ?: return@withContext null
         val target = rm.beginRotation(leadMillisOverride = 0L) ?: return@withContext null
@@ -1607,7 +1609,7 @@ class AppGraph(private val app: Application) {
             screenMirrorCapabilities.advertisedCapabilities,
         ) { name, capabilities -> name to capabilities }
             .drop(1) // skip the eager StateFlow seed; only react to real profile changes
-            .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
+            .debounce(PROFILE_BROADCAST_DEBOUNCE_MS.milliseconds)
             .distinctUntilChanged()
             .onEach {
                 val changedAt = settings.ensureSelfProfileRevision(selfProfileFingerprint()) ?: return@onEach
@@ -1800,7 +1802,7 @@ class NotiSyncApp : Application() {
 
     suspend fun awaitGraphReady(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =
         graphIfReady ?: runCatching {
-            withTimeoutOrNull(timeoutMillis) { graphDeferred.await() }
+            withTimeoutOrNull(timeoutMillis.milliseconds) { graphDeferred.await() }
         }.getOrNull()
 
     fun awaitGraphReadyBlocking(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =

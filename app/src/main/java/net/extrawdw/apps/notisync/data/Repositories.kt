@@ -55,6 +55,7 @@ class SettingsRepository internal constructor(
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val autoOpenOpenPgpRequestKey = booleanPreferencesKey("auto_open_openpgp_request")
     private val autoOpenSshRequestKey = booleanPreferencesKey("auto_open_ssh_request")
+    private val shareIphoneAppChannelsKey = booleanPreferencesKey("share_iphone_app_channels")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
     private val unverifiedDeviceCleanupV1CompletedKey =
         booleanPreferencesKey("unverified_device_cleanup_v1_completed")
@@ -155,6 +156,13 @@ class SettingsRepository internal constructor(
 
     suspend fun setAutoOpenSshRequest(on: Boolean) =
         store.edit { it[autoOpenSshRequestKey] = on }
+
+    val shareIphoneAppChannels: StateFlow<Boolean> =
+        store.data.map { it[shareIphoneAppChannelsKey] ?: false }
+            .stateInEager(scope, initialPreferences[shareIphoneAppChannelsKey] ?: false)
+
+    suspend fun setShareIphoneAppChannels(on: Boolean) =
+        store.edit { it[shareIphoneAppChannelsKey] = on }
 
     /** Show source app identity (app name + icon) in the lock-screen public version of mirrored
      *  notifications while keeping mirrored content private. Default on; users can disable it in Settings. */

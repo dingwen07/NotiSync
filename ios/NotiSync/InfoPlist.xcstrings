@@ -48,6 +48,12 @@
             "state" : "translated",
             "value" : "NotiSync 会读取附近 Android 设备模拟的卡片，以交换用于端到端加密的配对信息。"
           }
+        },
+        "zh-Hant-TW" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 會讀取附近 Android 裝置模擬的卡片，以交換受端對端加密保護的配對資訊。"
+          }
         }
       }
     },
@@ -67,7 +73,7 @@
             "value" : "NotiSync 会连接你选择的 Android 桥接设备，以便此设备向其共享系统通知。"
           }
         },
-        "zh-Hant" : {
+        "zh-Hant-TW" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "NotiSync 會連線至你選擇的 Android 橋接裝置，以便此裝置與其分享系統通知。"
@@ -90,6 +96,12 @@
             "state" : "translated",
             "value" : "NotiSync 会扫描其他设备的二维码，以配对并进行端到端加密的通知同步。"
           }
+        },
+        "zh-Hant-TW" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 會掃描裝置的 QR 碼以進行配對，並透過端對端加密同步通知。"
+          }
         }
       }
     },
@@ -101,6 +113,12 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "NotiSync connects directly to your trusted device to mirror and control its screen on your local network."
+          }
+        },
+        "zh-Hant-TW" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 會在區域網路上直接連線至您信任的裝置，以鏡像顯示及控制該裝置的螢幕。"
           }
         }
       }

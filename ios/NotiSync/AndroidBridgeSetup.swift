@@ -9,6 +9,7 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
     static let shared = AndroidBridgeSetup()
     private static let service = CBUUID(string: "d87b3910-72fa-48df-8ab7-6ae96fc3fb51")
     private static let version = CBUUID(string: "d87b3911-72fa-48df-8ab7-6ae96fc3fb51")
+    private static let reconnect = CBUUID(string: "d87b3912-72fa-48df-8ab7-6ae96fc3fb51")
     private let selectionKey = "androidBluetoothBridges"
     private let restoreID = "net.extrawdw.notisync.android-bridge"
 
@@ -23,6 +24,8 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
     private var retryTasks: [UUID: Task<Void, Never>] = [:]
     private var retryDelays: [UUID: Int] = [:]
     private var visible = false
+    private var scanningWhileVisible: Bool?
+    private var lastSetupAdvertisement: [UUID: ContinuousClock.Instant] = [:]
 
     private override init() {
         super.init()
@@ -47,7 +50,11 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
     func present(_ presented: Bool) {
         visible = presented
         if presented { startCentral() }
-        else { nearby.removeAll(); devices = devices.filter { selected[$0.key] != nil } }
+        else {
+            nearby.removeAll()
+            lastSetupAdvertisement.removeAll()
+            devices = devices.filter { selected[$0.key] != nil }
+        }
         updateScan()
     }
 
@@ -63,12 +70,30 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
     private func updateScan() {
         guard let central, central.state == .poweredOn else { return }
         let needed = visible || selected.keys.contains { devices[$0] == nil || retryTasks[$0] != nil }
-        if needed && !central.isScanning { central.scanForPeripherals(withServices: [Self.service]) }
-        else if !needed && central.isScanning { central.stopScan() }
+        if !needed {
+            if central.isScanning { central.stopScan() }
+            return
+        }
+        guard !central.isScanning || scanningWhileVisible != visible else { return }
+        if central.isScanning { central.stopScan() }
+        central.scanForPeripherals(withServices: [Self.service, Self.reconnect],
+                                   options: [CBCentralManagerScanOptionAllowDuplicatesKey: visible])
+        scanningWhileVisible = visible
+    }
+
+    // Core Bluetooth reports discoveries but has no callback when a peripheral stops advertising.
+    func expireNearby() {
+        let cutoff = ContinuousClock.now - .seconds(10)
+        for (id, lastSeen) in lastSetupAdvertisement where lastSeen < cutoff {
+            lastSetupAdvertisement.removeValue(forKey: id)
+            nearby.removeValue(forKey: id)
+            if selected[id] == nil { devices.removeValue(forKey: id) }
+        }
     }
 
     func choose(_ id: UUID) {
         guard let peer = devices[id], let name = nearby.removeValue(forKey: id) else { return }
+        lastSetupAdvertisement.removeValue(forKey: id)
         selected[id] = name
         persist()
         connect(peer)
@@ -89,6 +114,7 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
         if let peer = devices.removeValue(forKey: id) { central?.cancelPeripheralConnection(peer) }
         // Reset duplicate filtering so an accessory that never left radio range can be chosen again.
         nearby.removeAll()
+        lastSetupAdvertisement.removeAll()
         if central?.isScanning == true { central?.stopScan() }
         updateScan()
     }
@@ -116,6 +142,8 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
             for task in retryTasks.values { task.cancel() }
             retryTasks.removeAll(); retryDelays.removeAll()
             nearby.removeAll(); versionRead.removeAll(); phases.removeAll(); devices.removeAll()
+            lastSetupAdvertisement.removeAll()
+            scanningWhileVisible = nil
             return
         }
         for peer in central.retrievePeripherals(withIdentifiers: Array(selected.keys)) { devices[peer.identifier] = peer }
@@ -138,8 +166,18 @@ final class AndroidBridgeSetup: NSObject, ObservableObject, CBCentralManagerDele
         if selected[id] != nil {
             if devices[id] == nil || retryTasks[id] != nil { connect(peer); updateScan() }
         } else if visible {
+            let advertised = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+            guard advertised.contains(Self.service) && !advertised.contains(Self.reconnect) else {
+                if lastSetupAdvertisement.removeValue(forKey: id) != nil {
+                    devices.removeValue(forKey: id)
+                    nearby.removeValue(forKey: id)
+                }
+                return
+            }
+            lastSetupAdvertisement[id] = .now
             devices[id] = peer
-            nearby[id] = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peer.name ?? ""
+            let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peer.name ?? ""
+            if nearby[id] != name { nearby[id] = name }
         }
     }
 
@@ -318,13 +356,19 @@ struct AndroidBridgeSetupView: View {
                     }
                 }
             } footer: {
-                Text("On Android, open NotiSync’s iPhone tab, turn on the bridge, and choose iOS App under Pair your iPhone if shown.")
+                Text("On Android, open NotiSync’s iPhone tab, turn on the bridge, and choose NotiSync iOS App under Pair your iPhone if shown.")
             }
         }
         .navigationTitle("Android Bluetooth Bridge")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { setup.present(true) }
         .onDisappear { setup.present(false) }
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                setup.expireNearby()
+            }
+        }
     }
 
     @ViewBuilder

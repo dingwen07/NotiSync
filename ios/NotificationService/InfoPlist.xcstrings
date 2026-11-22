@@ -16,6 +16,12 @@
             "state" : "translated",
             "value" : "NotiSync 通知"
           }
+        },
+        "zh-Hant-TW" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 通知"
+          }
         }
       }
     },

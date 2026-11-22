@@ -602,6 +602,9 @@
     <!-- Settings screen -->
     <string name="settings_section_connection">Connection</string>
     <string name="settings_section_notifications">Notifications</string>
+    <string name="settings_share_iphone_app_channels">Share app channels across iPhones</string>
+    <string name="settings_share_iphone_app_channels_hint">Use one channel per app for iPhones using the same Android bridge.</string>
+    <string name="mirror_shared_iphone_apps">iPhone apps via %1$s</string>
     <string name="settings_section_screen_sharing">Screen sharing</string>
     <string name="settings_section_seal_ssh">Seal &amp; SSH</string>
     <string name="settings_section_others">Others</string>
@@ -677,8 +680,9 @@
     <string name="diagnostics_rotate_pending">A rotation is already in progress</string>
     <string name="diagnostics_rotate_failed">Rotation failed — check the broker connection</string>
     <string name="diagnostics_channels">Notification channels</string>
-    <string name="diagnostics_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
-    <string name="diagnostics_channels_reset">Reset notification channels</string>
+    <string name="diagnostics_channels_hint">Deleting channels removes their active notifications from this device. Channels are created again as notifications arrive. Android may restore their previous settings.</string>
+    <string name="diagnostics_channels_reset">Delete all mirrored channels</string>
+    <string name="diagnostics_delete_ancs_channels">Delete iPhone (ANCS) channels</string>
     <string name="diagnostics_ssh_key_storage">SSH key storage</string>
     <string name="diagnostics_ssh_key_storage_hint">Reset SSH key storage on this device. This removes all SSH keys, pending requests, request history, remembered authorizations, and saved SSH host fingerprints and hostnames. Other NotiSync keys and data are not affected.</string>
     <string name="diagnostics_ssh_key_storage_reset">Reset SSH key storage</string>
@@ -806,7 +810,7 @@
     <string name="device_capability_screen_visibility">Background Video Pause</string>
     <string name="device_capability_screen_broker_relay">Broker-Relayed Screen Sharing</string>
     <string name="screen_mirror_settings_title">Screen sharing and control (Experimental)</string>
-    <string name="screen_mirror_settings_body">Allow authorized devices of yours to view and control this screen using Shizuku, over a direct local connection or a manually selected broker relay.</string>
+    <string name="screen_mirror_settings_body">Allow authorized devices to view and control this screen using Shizuku.</string>
     <string name="screen_mirror_settings_not_running">Start Shizuku Manager to finish setup.</string>
     <string name="screen_mirror_settings_permission">Shizuku permission is required.</string>
     <string name="screen_mirror_settings_root_unsupported">Root-backed Shizuku is not supported.</string>
@@ -815,7 +819,7 @@
     <string name="screen_mirror_settings_no_hardware_encoder">No supported hardware screen encoder is available.</string>
     <string name="screen_mirror_settings_display_unavailable">Shizuku could not access the primary display for capture.</string>
     <string name="screen_mirror_settings_input_unavailable">Shizuku could not access Android input injection.</string>
-    <string name="screen_mirror_settings_ready">Ready. Approve individual devices from device details sheet.</string>
+    <string name="screen_mirror_settings_ready">Ready. Approve individual devices from the Devices tab.</string>
     <string name="screen_mirror_settings_error">Shizuku is outdated or could not be reached.</string>
     <string name="screen_mirror_open_shizuku">Open Shizuku</string>
     <string name="screen_mirror_device_title">Allow screen control</string>

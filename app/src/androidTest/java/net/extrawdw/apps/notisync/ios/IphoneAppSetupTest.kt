@@ -76,7 +76,7 @@ class IphoneAppSetupTest {
         for (manufacturer in listOf("Xiaomi", "vivo", "iQOO", "Redmi", "POCO")) {
             val appSetup = IphoneAppSetup.prefersAppSetup(37, manufacturer, "QTI")
             assertTrue(appSetup)
-            val data = IphoneAppSetup.advertisement(appSetup)
+            val data = IphoneAppSetup.advertisement(IphoneAdvertisement.SETUP)
             val service = IphoneAppSetup.service()
             assertEquals(listOf(ParcelUuid(service.uuid)), data.serviceUuids)
             assertTrue(data.serviceSolicitationUuids.isEmpty())
@@ -86,10 +86,17 @@ class IphoneAppSetupTest {
         }
     }
 
+    @Test fun reconnectAdvertisementOmitsPublicSetupAndAncsSolicitation() {
+        val data = IphoneAppSetup.advertisement(IphoneAdvertisement.RECONNECT)
+        assertEquals(listOf(ParcelUuid(IphoneAppSetup.reconnectId)), data.serviceUuids)
+        assertFalse(data.includeDeviceName)
+        assertTrue(data.serviceSolicitationUuids.isEmpty())
+    }
+
     @Test fun settingsSetupRemainsAvailableOnOtherBuilds() {
         assertFalse(IphoneAppSetup.prefersAppSetup(37, "Google", "Google"))
         assertFalse(IphoneAppSetup.prefersAppSetup(36, "vivo", "QTI"))
-        val data = IphoneAppSetup.advertisement(false)
+        val data = IphoneAppSetup.advertisement(IphoneAdvertisement.NATIVE)
         assertEquals(listOf(ParcelUuid(Ancs.SERVICE_UUID)), data.serviceSolicitationUuids)
         assertTrue(data.serviceUuids.isEmpty())
     }

@@ -565,6 +565,9 @@
     <!-- Settings screen -->
     <string name="settings_section_connection">連線</string>
     <string name="settings_section_notifications">通知</string>
+    <string name="settings_share_iphone_app_channels">在不同 iPhone 之間共用 App 通知管道</string>
+    <string name="settings_share_iphone_app_channels_hint">同一橋接裝置的 iPhone 依應用程式共用管道。</string>
+    <string name="mirror_shared_iphone_apps">透過 %1$s 傳送的 iPhone App</string>
     <string name="settings_section_screen_sharing">螢幕分享</string>
     <string name="settings_section_seal_ssh">Seal 與 SSH</string>
     <string name="settings_section_others">其他</string>
@@ -636,8 +639,9 @@
     <string name="diagnostics_rotate_pending">已有一個輪換正在進行</string>
     <string name="diagnostics_rotate_failed">輪換失敗 — 請檢查與中繼伺服器的連線</string>
     <string name="diagnostics_channels">通知管道</string>
-    <string name="diagnostics_channels_hint">通知管道（類別）會在新通知送達時建立。來自 Android 的通知會沿用原始通知管道，而每個 iOS 應用程式會使用單一通知管道。\n\n此選項會刪除所有鏡像通知管道，並清除您對各管道的自訂設定（包括音效、震動、彈出式通知、應用程式圖示標記等）。</string>
-    <string name="diagnostics_channels_reset">重設通知管道</string>
+    <string name="diagnostics_channels_hint">刪除管道會移除這部裝置上該管道的現有通知。收到新通知時，系統會重新建立管道，Android 可能會還原先前的設定。</string>
+    <string name="diagnostics_channels_reset">刪除所有鏡像通知管道</string>
+    <string name="diagnostics_delete_ancs_channels">刪除 iPhone（ANCS）通知管道</string>
     <string name="diagnostics_ssh_key_storage">SSH 金鑰儲存</string>
     <string name="diagnostics_ssh_key_storage_hint">重設此裝置的 SSH 金鑰儲存。這會移除所有 SSH 金鑰、待處理要求、要求歷史記錄、已記住的授權，以及已儲存的 SSH 主機指紋和主機名稱。不會影響 NotiSync 的其他金鑰或資料。</string>
     <string name="diagnostics_ssh_key_storage_reset">重設 SSH 金鑰儲存</string>
@@ -758,7 +762,7 @@
     <string name="device_capability_screen_visibility">背景視訊暫停</string>
     <string name="device_capability_screen_broker_relay">中繼螢幕分享</string>
     <string name="screen_mirror_settings_title">螢幕分享和控制（實驗性）</string>
-    <string name="screen_mirror_settings_body">允許您授權的裝置透過 Shizuku 檢視並控制此螢幕，使用區域網路直接連線或手動選取的 Broker 中繼。</string>
+    <string name="screen_mirror_settings_body">允許您授權的裝置透過 Shizuku 檢視並控制此螢幕。</string>
     <string name="screen_mirror_settings_not_running">請啟動 Shizuku 管理員以完成設定。</string>
     <string name="screen_mirror_settings_permission">需要 Shizuku 權限。</string>
     <string name="screen_mirror_settings_root_unsupported">不支援 Root 模式的 Shizuku。</string>
@@ -767,7 +771,7 @@
     <string name="screen_mirror_settings_no_hardware_encoder">沒有可用的受支援硬體螢幕編碼器。</string>
     <string name="screen_mirror_settings_display_unavailable">Shizuku 無法存取主要顯示器以擷取畫面。</string>
     <string name="screen_mirror_settings_input_unavailable">Shizuku 無法使用 Android 輸入注入功能。</string>
-    <string name="screen_mirror_settings_ready">已就緒。請在裝置詳細資料中核准裝置連線。</string>
+    <string name="screen_mirror_settings_ready">已就緒。在「裝置」標籤中核准裝置連線。</string>
     <string name="screen_mirror_settings_error">Shizuku 版本過舊或無法連線。</string>
     <string name="screen_mirror_open_shizuku">開啟 Shizuku</string>
     <string name="screen_mirror_device_title">允許螢幕控制</string>

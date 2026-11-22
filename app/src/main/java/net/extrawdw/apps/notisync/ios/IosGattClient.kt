@@ -49,6 +49,7 @@ class IosGattClient(
     private val onSourceEvent: (Ancs.SourcePacket) -> Unit,
     private val onBondNeeded: () -> Unit,
     private val onDeviceName: (String) -> Unit,
+    private val onLeConnected: () -> Unit,
     /** Invoked once this client terminally disconnects or fails to connect, so the manager can drop it and
      *  let the next inbound connection (possibly under a rotated random address) spawn a fresh client. */
     private val onClientGone: () -> Unit = {},
@@ -104,6 +105,7 @@ class IosGattClient(
     private val subscribe = Runnable { gatt?.let(::writeSubscription) }
     private var cccdAttempts = 0
     private var discoveryAttempts = 0
+    private var balancedPriorityRequested = false
 
     @Volatile
     private var reachedSharing = false
@@ -342,15 +344,16 @@ class IosGattClient(
      * then register the Player + Track attribute sets. Best-effort: an iPhone without AMS (or a failed
      * step) logs and leaves the notification bridge untouched.
      */
-    private fun startAmsSetup() {
+    private fun startAmsSetup(g: BluetoothGatt) {
         val eu = amsEntityUpdate
-        if (eu == null) {
-            Log.i(TAG, "AMS not exposed by this iPhone — media mirroring unavailable this session")
+        val host = scope
+        if (eu == null || host == null) {
+            if (eu == null) Log.i(TAG, "AMS not exposed by this iPhone — media mirroring unavailable this session")
+            requestBalancedPriority(g)
             return
         }
         if (amsSetupStarted) return
         amsSetupStarted = true
-        val host = scope ?: return
         CoroutineScope(host.coroutineContext + amsJob).launch {
             val euOk = amsSubscribe(eu)
             if (!euOk) {
@@ -363,7 +366,18 @@ class IosGattClient(
             val trackOk =
                 amsWrite(eu, Ams.buildEntityUpdateRegistration(Ams.ENTITY_TRACK, Ams.TRACK_ATTRS))
             Log.i(TAG, "AMS setup: remoteCommand=$rcOk player=$playerOk track=$trackOk")
+        }.invokeOnCompletion { cause ->
+            if (cause == null) handler.post { requestBalancedPriority(g) }
         }
+    }
+
+    // Service discovery can still be negotiating link timing when its callback arrives.
+    // Request balanced parameters once the bridge has finished its own setup.
+    private fun requestBalancedPriority(g: BluetoothGatt) {
+        if (g !== gatt || !reachedSharing || balancedPriorityRequested) return
+        balancedPriorityRequested = true
+        val submitted = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+        Log.i(TAG, "Balanced connection priority request submitted=$submitted")
     }
 
     /** Enable notifications on an AMS characteristic (CCCD write), awaiting its [onDescriptorWrite]. */
@@ -478,6 +492,7 @@ class IosGattClient(
             Log.i(TAG, "client conn: status=$status newState=$newState bond=${device.bondState}")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    onLeConnected()
                     onStatus(IosBridgeStatus.CONNECTING)
                     if (!g.requestMtu(MTU)) g.discoverServices()
                 }
@@ -605,7 +620,7 @@ class IosGattClient(
                     handler.removeCallbacks(watchdog)
                     onStatus(IosBridgeStatus.SHARING)
                     readGapDeviceName(g)
-                    startAmsSetup()
+                    startAmsSetup(g)
                 } else {
                     writeSubscription(g)
                 }

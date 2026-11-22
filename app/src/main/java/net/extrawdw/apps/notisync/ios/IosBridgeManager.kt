@@ -104,6 +104,8 @@ class IosBridgeManager(
         }
 
     private var appAdvertising = false
+    private var advertisingReady = false
+    private var advertisingMode: IphoneAdvertisement? = null
     private val setupPreferences = IosCompanion.setupPreferences(context)
     private var selectedPeer: IosPeerSelection? = null
 
@@ -225,11 +227,11 @@ class IosBridgeManager(
         )
         advertiser = adv
         deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
-        openPeripheral(adv)
-        registerBondReceiver()
         running = true
         reconnectAttempts = 0
         resettingPeripheral = false
+        registerBondReceiver()
+        openPeripheral()
         // Re-arm CompanionDeviceManager presence (if the user set up background auto-connect) so the OS keeps
         // waking us when the iPhone is in range — survives reboots / process death.
         IosCompanion.observePresence(context)
@@ -264,7 +266,29 @@ class IosBridgeManager(
 
     // ---- Advertising + GATT server (peripheral role) ----
 
-    private fun startAdvertising(adv: BluetoothLeAdvertiser) {
+    private fun desiredAdvertisingMode() = IphoneAppSetup.advertisingMode(appAdvertising, selectedPeer, lePeers.keys)
+
+    private fun syncAdvertising() {
+        if (!running || !advertisingReady || resettingPeripheral) return
+        val adv = advertiser ?: return
+        val desired = desiredAdvertisingMode()
+        if (desired == advertisingMode) return
+        val callback = advertisingCallback
+        if (callback == null) {
+            if (desired != null) startAdvertising(adv, desired)
+        } else if (advertisingSet != null && advertisingMode != null) {
+            // Reuse the controller's single advertising slot only after it confirms the old set stopped.
+            val previous = advertisingMode
+            advertisingMode = null
+            runCatching { adv.stopAdvertisingSet(callback) }.onFailure {
+                advertisingMode = previous
+                Log.w(TAG, "Couldn't stop iPhone advertising", it)
+            }
+        }
+        // A pending start or stop callback rechecks the latest selection and link state.
+    }
+
+    private fun startAdvertising(adv: BluetoothLeAdvertiser, mode: IphoneAdvertisement) {
         // The legacy startAdvertising() path silently drops service-solicitation UUIDs on many OEM stacks
         // (confirmed here: nRF Connect saw no solicitation). startAdvertisingSet() is the modern path and
         // reports a distinct status if the controller rejects the data. Keep setLegacyMode(true): iOS only
@@ -273,12 +297,13 @@ class IosBridgeManager(
             .setLegacyMode(true)
             .setConnectable(true)
             .setScannable(true)
+            .setDiscoverable(mode != IphoneAdvertisement.RECONNECT)
             .setInterval(AdvertisingSetParameters.INTERVAL_MEDIUM)
             .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
             .build()
-        // Both setup modes use a 128-bit UUID. Put the name in the scan response when it fits.
-        val data = IphoneAppSetup.advertisement(appAdvertising)
-        val scanResponse = AdvertiseData.Builder()
+        // The public setup scan response may include the name; reconnect packets carry only the marker.
+        val data = IphoneAppSetup.advertisement(mode)
+        val scanResponse = if (mode == IphoneAdvertisement.RECONNECT) null else AdvertiseData.Builder()
             .setIncludeDeviceName((adapter?.name?.toByteArray()?.size ?: 0) <= 29)
             .build()
         val callback = object : AdvertisingSetCallback() {
@@ -286,13 +311,25 @@ class IosBridgeManager(
                 if (advertisingCallback !== this) return
                 if (status == ADVERTISE_SUCCESS) {
                     advertisingSet = set
-                    Log.i(TAG, "iPhone advertising started (appSetup=$appAdvertising)")
+                    Log.i(TAG, "iPhone advertising started ($mode)")
+                    syncAdvertising()
                 } else {
                     Log.w(TAG, "iPhone advertising failed: status=$status")
-                    deviceRepo.setStatus(IosBridgeStatus.ERROR)
+                    advertisingStartFailed(mode)
                 }
             }
+
+            override fun onAdvertisingSetStopped(set: AdvertisingSet?) {
+                if (advertisingCallback !== this) return
+                advertisingCallback = null
+                advertisingSet = null
+                advertisingMode = null
+                advertisingLosses.advertisingStopped()
+                Log.i(TAG, "iPhone advertising stopped ($mode)")
+                syncAdvertising()
+            }
         }
+        advertisingMode = mode
         advertisingCallback = callback
         advertisingLosses.advertisingRequested(SystemClock.elapsedRealtime())
         runCatching {
@@ -306,15 +343,22 @@ class IosBridgeManager(
             )
         }
             .onFailure {
-                Log.w(TAG, "startAdvertisingSet threw", it); deviceRepo.setStatus(
-                IosBridgeStatus.ERROR
-            )
+                Log.w(TAG, "startAdvertisingSet threw", it)
+                advertisingStartFailed(mode)
             }
+    }
+
+    private fun advertisingStartFailed(mode: IphoneAdvertisement) {
+        advertisingMode = null
+        advertisingCallback = null
+        if (desiredAdvertisingMode() == mode) deviceRepo.setStatus(IosBridgeStatus.ERROR) else syncAdvertising()
     }
 
     private var advertisingCallback: AdvertisingSetCallback? = null
 
     private fun stopAdvertising() {
+        advertisingReady = false
+        advertisingMode = null
         advertisingLosses.advertisingStopped()
         val callback = advertisingCallback
         advertisingCallback = null
@@ -322,7 +366,7 @@ class IosBridgeManager(
         if (callback != null) runCatching { advertiser?.stopAdvertisingSet(callback) }
     }
 
-    private fun openPeripheral(adv: BluetoothLeAdvertiser) {
+    private fun openPeripheral() {
         val useApp = setupPreferences.usesApp
         if (appAdvertising != useApp) advertisingLosses.reset()
         appAdvertising = useApp
@@ -332,8 +376,10 @@ class IosBridgeManager(
             override fun onServiceAdded(status: Int, service: BluetoothGattService) {
                 handler.post {
                     if (!running || serverCallback !== this || service.uuid != IphoneAppSetup.serviceId) return@post
-                    if (status == BluetoothGatt.GATT_SUCCESS) startAdvertising(adv)
-                    else deviceRepo.setStatus(IosBridgeStatus.ERROR)
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        advertisingReady = true
+                        syncAdvertising()
+                    } else deviceRepo.setStatus(IosBridgeStatus.ERROR)
                 }
             }
 
@@ -341,17 +387,19 @@ class IosBridgeManager(
                                                      characteristic: BluetoothGattCharacteristic) {
                 handler.post {
                     if (!running || serverCallback !== this) return@post
+                    updateSelection()
+                    val selected = selectedPeer
                     val status = when {
                         characteristic.uuid != IphoneAppSetup.versionId -> BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED
+                        selected != null && !device.address.equals(selected.address, ignoreCase = true) ->
+                            BluetoothGatt.GATT_INSUFFICIENT_AUTHORIZATION
                         offset !in 0..1 -> BluetoothGatt.GATT_INVALID_OFFSET
                         else -> BluetoothGatt.GATT_SUCCESS
                     }
                     val value = if (status == BluetoothGatt.GATT_SUCCESS && offset == 0) byteArrayOf(1) else byteArrayOf()
                     if (gattServer?.sendResponse(device, requestId, status, offset, value) != true ||
                         status != BluetoothGatt.GATT_SUCCESS) return@post
-                    updateSelection()
-                    if (device.address.equals(selectedPeer?.address, ignoreCase = true)) attach(listOf(device))
-                    else setupDevice = device
+                    if (selected == null) setupDevice = device else attach(listOf(device))
                 }
             }
 
@@ -370,7 +418,7 @@ class IosBridgeManager(
                         }
                         BluetoothProfile.STATE_DISCONNECTED -> {
                             serverLinks.remove(device.address)
-                            if (leLinkState(device) == false) lePeers.remove(device.address)
+                            if (leLinkState(device) != true) lePeers.remove(device.address)
                             publishLePeers()
                             if (device == setupDevice && leLinkState(device) != true) setupDevice = null
                             if (device == connectedDevice && leLinkState(device) != true) {
@@ -379,6 +427,7 @@ class IosBridgeManager(
                             }
                         }
                     }
+                    syncAdvertising()
                 }
             }
         }
@@ -387,7 +436,10 @@ class IosBridgeManager(
         gattServer = server
         if (server == null || (appAdvertising && !server.addService(IphoneAppSetup.service()))) {
             deviceRepo.setStatus(IosBridgeStatus.ERROR)
-        } else if (!appAdvertising) startAdvertising(adv)
+        } else if (!appAdvertising) {
+            advertisingReady = true
+            syncAdvertising()
+        }
     }
 
     /** Called on the main thread when setup or Forget changes the selected phone. */
@@ -454,16 +506,18 @@ class IosBridgeManager(
 
     private fun updateSelection() {
         val next = IosCompanion.selectedPeer(context)
-        if (selectedPeer == next) return
+        val previous = selectedPeer
         selectedPeer = next
+        if (previous?.address == next?.address) return
         enrolling = null
-        if (next?.address == setupDevice?.address) setupDevice = null
+        setupDevice = null
         reconnectAttempts = 0
         handler.removeCallbacks(attachRunnable)
         if (client != null) onCentralDisconnected()
         // Deferred dismissals and content keys belong to the previous phone.
         keyToContent.clear()
         pendingClear.clear()
+        syncAdvertising()
     }
 
     private fun attach(candidates: List<BluetoothDevice>) {
@@ -497,6 +551,12 @@ class IosBridgeManager(
                     IosCompanion.saveGapName(context, device.address, name)
                     refreshDeviceName(device)
                     Log.i(TAG, "Read the selected iPhone’s GAP device name")
+                }
+            },
+            onLeConnected = {
+                if (client === c && appAdvertising) {
+                    lePeers[device.address] = device
+                    syncAdvertising()
                 }
             },
             onClientGone = {
@@ -534,6 +594,7 @@ class IosBridgeManager(
         for (device in connected) if (leLinkState(device) == true) lePeers[device.address] = device
         publishLePeers()
         if (client == null && selectedPeer != null) attach(connected)
+        syncAdvertising()
     }
 
     /**
@@ -606,12 +667,13 @@ class IosBridgeManager(
         Log.i(TAG, "peripheral reopen: re-opening GATT server + advertising")
         advertiser = adv
         deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
-        openPeripheral(adv)
+        openPeripheral()
         tryAttachConnected()
     }
 
     private fun onCentralDisconnected() {
         Log.i(TAG, "central disconnected — back to advertising")
+        connectedDevice?.let { if (leLinkState(it) != true) lePeers.remove(it.address) }
         client?.close(); client = null
         connectedDevice = null
         amsBridge.onGone() // media state is session-scoped like the UID map below
@@ -620,6 +682,7 @@ class IosBridgeManager(
         selfClearedUids.clear() // ditto — pending self-clear confirmations don't carry across sessions
         deviceRepo.clearDeviceName() // no device connected — don't leave a stale name in the FGS / tab / group labels
         deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
+        syncAdvertising()
     }
 
     private fun refreshDeviceName(device: BluetoothDevice) {
@@ -668,6 +731,7 @@ class IosBridgeManager(
                     }
                 }
                 publishLePeers()
+                syncAdvertising()
                 return
             }
             if (device != null && device == enrolling) {
