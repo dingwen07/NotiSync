@@ -149,7 +149,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
     }
 
     val needsEnrollment = remember(selectedPeer, status) { IosCompanion.needsLeEnrollment(context, selectedPeer) }
-    IphoneCompanionAccess(
+    IosCompanionAccess(
         enabled = step == OnboardingStep.IPHONE && bridgeEnabled && (appSetup || needsEnrollment && status == IosBridgeStatus.ADVERTISING),
         appSetup = appSetup, selected = selectedPeer,
     ) {
@@ -400,7 +400,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                                                     verticalArrangement = Arrangement.spacedBy(12.dp),
                                                 ) {
                                                     if (currentSetupPeer == null) {
-                                                        IphoneSetupModeSelector(
+                                                        IosBridgeSetupModeSelector(
                                                             appSetup = appSetup,
                                                             onModeChanged = {
                                                                 if (bridgeEnabled) {
@@ -416,7 +416,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                         )
                                                     } else {
-                                                        IphoneSetupSteps(appSetup = appSetup)
+                                                        IosBridgeSetupSteps(appSetup = appSetup)
                                                     }
                                                 }
                                             }

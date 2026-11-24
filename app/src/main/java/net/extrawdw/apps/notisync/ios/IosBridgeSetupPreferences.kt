@@ -6,7 +6,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
-internal class IphoneSetupPreferences(private val prefs: SharedPreferences, private val listed: Boolean) {
+internal class IosBridgeSetupPreferences(private val prefs: SharedPreferences, private val listed: Boolean) {
     val usesApp: Boolean get() = prefs.getBoolean(APP_MODE, false) ||
         (listed && !prefs.getBoolean(LISTED_NATIVE_CONFIRMED, false))
     val warnBeforeNative: Boolean get() = listed || prefs.getBoolean(REPEATED_LOSS, false)

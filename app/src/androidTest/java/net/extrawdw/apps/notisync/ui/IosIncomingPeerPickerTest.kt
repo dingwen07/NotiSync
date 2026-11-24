@@ -11,7 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class IncomingIphonePickerTest {
+class IosIncomingPeerPickerTest {
     @get:Rule val compose = createComposeRule()
 
     @Test
@@ -20,7 +20,7 @@ class IncomingIphonePickerTest {
         val second = Peer("AA:00:00:00:00:02", "iPhone")
         val selections = mutableListOf<Peer>()
         compose.setContent {
-            IncomingIphonePicker(listOf(first, second), onDismiss = {}, onSelect = selections::add)
+            IosIncomingPeerPicker(listOf(first, second), onDismiss = {}, onSelect = selections::add)
         }
         compose.onNodeWithText(second.address, substring = true).performClick()
         compose.runOnIdle { assertEquals(listOf(second), selections) }

@@ -39,7 +39,7 @@ class IosDeviceRepository {
     private val _deviceName = MutableStateFlow<String?>(null)
     val deviceName: StateFlow<String?> = _deviceName
 
-    internal val pairingCandidates = IphonePairingCandidates()
+    internal val pairingCandidates = IosPairingCandidates()
     private val _connectedLePeers = MutableStateFlow<List<IosCompanion.Peer>>(emptyList())
     internal val connectedLePeers = _connectedLePeers.asStateFlow()
 

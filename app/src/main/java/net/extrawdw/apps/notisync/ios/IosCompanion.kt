@@ -41,8 +41,8 @@ object IosCompanion {
     private fun prefs(context: Context) = context.createDeviceProtectedStorageContext()
         .getSharedPreferences(PEER_PREFS, Context.MODE_PRIVATE)
 
-    internal fun setupPreferences(context: Context) = IphoneSetupPreferences(
-        prefs(context), IphoneAppSetup.prefersAppSetup(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.SOC_MANUFACTURER),
+    internal fun setupPreferences(context: Context) = IosBridgeSetupPreferences(
+        prefs(context), IosBridgeSetup.prefersAppSetup(Build.VERSION.SDK_INT, Build.MANUFACTURER, Build.SOC_MANUFACTURER),
     )
 
     private fun AssociationInfo.peer(): IosPeerSelection? =
@@ -85,7 +85,7 @@ object IosCompanion {
     internal data class Peer(
         val address: String,
         val name: String?,
-        val nativeOffer: IphonePairingCandidates.Offer? = null,
+        val nativeOffer: IosPairingCandidates.Offer? = null,
     )
 
     @SuppressLint("MissingPermission")

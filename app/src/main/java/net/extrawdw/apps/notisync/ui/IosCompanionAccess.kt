@@ -23,7 +23,7 @@ import net.extrawdw.apps.notisync.ios.IosPeerSelection
 
 /** Ask CDM for a specific iPhone while the bridge setup screen is in the foreground. */
 @Composable
-internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected: IosPeerSelection?, onSelected: () -> Unit) {
+internal fun IosCompanionAccess(enabled: Boolean, appSetup: Boolean, selected: IosPeerSelection?, onSelected: () -> Unit) {
     val context = LocalContext.current
     val graph = rememberGraph()
     val peers by graph.iosDeviceRepo.connectedLePeers.collectAsStateWithLifecycle()
@@ -108,7 +108,7 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
         val cdm = IosCompanion.manager(context) ?: return failed()
         pendingLink = link
         pending = address
-        Log.i("IphoneCompanionAccess", "Requesting single-device CDM access (helper=${link == null})")
+        Log.i("IosCompanionAccess", "Requesting single-device CDM access (helper=${link == null})")
         runCatching {
             cdm.associate(IosCompanion.request(address), context.mainExecutor, object : CompanionDeviceManager.Callback() {
                 override fun onAssociationPending(intentSender: IntentSender) {
@@ -149,7 +149,7 @@ internal fun IphoneCompanionAccess(enabled: Boolean, appSetup: Boolean, selected
         val live = ambiguous.filter { candidate -> candidate.nativeOffer?.session == setupSession &&
             peers.any { it.address == candidate.address && it.nativeOffer == candidate.nativeOffer } }
         if (live.isEmpty()) LaunchedEffect(Unit) { ambiguous = emptyList() }
-        else IncomingIphonePicker(live, onDismiss = { ambiguous = emptyList() }) { peer ->
+        else IosIncomingPeerPicker(live, onDismiss = { ambiguous = emptyList() }) { peer ->
             ambiguous = emptyList()
             requestNative(peer)
         }

@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
 import androidx.test.ext.junit.runners.AndroidJUnit4
 
 @RunWith(AndroidJUnit4::class)
-class IphoneAppSetupTest {
+class IosBridgeSetupTest {
     @Test fun repeatedLossNotificationDistinguishesFallbackFromShutdown() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -74,29 +74,29 @@ class IphoneAppSetupTest {
 
     @Test fun affectedPhonesAdvertiseOnlyTheirPublishedService() {
         for (manufacturer in listOf("Xiaomi", "vivo", "iQOO", "Redmi", "POCO")) {
-            val appSetup = IphoneAppSetup.prefersAppSetup(37, manufacturer, "QTI")
+            val appSetup = IosBridgeSetup.prefersAppSetup(37, manufacturer, "QTI")
             assertTrue(appSetup)
-            val data = IphoneAppSetup.advertisement(IphoneAdvertisement.SETUP)
-            val service = IphoneAppSetup.service()
+            val data = IosBridgeSetup.advertisement(IosBridgeAdvertisingMode.SETUP)
+            val service = IosBridgeSetup.service()
             assertEquals(listOf(ParcelUuid(service.uuid)), data.serviceUuids)
             assertTrue(data.serviceSolicitationUuids.isEmpty())
-            val version = service.getCharacteristic(IphoneAppSetup.versionId)
+            val version = service.getCharacteristic(IosBridgeSetup.versionId)
             assertEquals(BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED, version.permissions)
             assertEquals(BluetoothGattCharacteristic.PROPERTY_READ, version.properties)
         }
     }
 
     @Test fun reconnectAdvertisementOmitsPublicSetupAndAncsSolicitation() {
-        val data = IphoneAppSetup.advertisement(IphoneAdvertisement.RECONNECT)
-        assertEquals(listOf(ParcelUuid(IphoneAppSetup.reconnectId)), data.serviceUuids)
+        val data = IosBridgeSetup.advertisement(IosBridgeAdvertisingMode.RECONNECT)
+        assertEquals(listOf(ParcelUuid(IosBridgeSetup.reconnectId)), data.serviceUuids)
         assertFalse(data.includeDeviceName)
         assertTrue(data.serviceSolicitationUuids.isEmpty())
     }
 
     @Test fun settingsSetupRemainsAvailableOnOtherBuilds() {
-        assertFalse(IphoneAppSetup.prefersAppSetup(37, "Google", "Google"))
-        assertFalse(IphoneAppSetup.prefersAppSetup(36, "vivo", "QTI"))
-        val data = IphoneAppSetup.advertisement(IphoneAdvertisement.NATIVE)
+        assertFalse(IosBridgeSetup.prefersAppSetup(37, "Google", "Google"))
+        assertFalse(IosBridgeSetup.prefersAppSetup(36, "vivo", "QTI"))
+        val data = IosBridgeSetup.advertisement(IosBridgeAdvertisingMode.NATIVE)
         assertEquals(listOf(ParcelUuid(Ancs.SERVICE_UUID)), data.serviceSolicitationUuids)
         assertTrue(data.serviceUuids.isEmpty())
     }

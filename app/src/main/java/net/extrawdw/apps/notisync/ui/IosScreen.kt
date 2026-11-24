@@ -105,7 +105,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.ios.IphoneSetupPreferences
+import net.extrawdw.apps.notisync.ios.IosBridgeSetupPreferences
 import net.extrawdw.apps.notisync.ios.IosBridgeService
 import net.extrawdw.apps.notisync.ios.IosBluetoothPermissions
 import net.extrawdw.apps.notisync.ios.IosCompanion
@@ -360,7 +360,7 @@ fun IosScreen() {
     val needsEnrollment = remember(selectedPeer, status, bluetoothOn) {
         IosCompanion.needsLeEnrollment(context, selectedPeer)
     }
-    IphoneCompanionAccess(
+    IosCompanionAccess(
         enabled = bridgeEnabled && (appSetup || needsEnrollment && status == IosBridgeStatus.ADVERTISING),
         appSetup = appSetup, selected = selectedPeer,
         onSelected = ::refreshPeer,
@@ -878,7 +878,7 @@ private fun PairingCard(
                     }
 
                     if (presentation.showModeSelector) {
-                        IphoneSetupModeSelector(
+                        IosBridgeSetupModeSelector(
                             appSetup = appSetup,
                             onModeChanged = onModeChanged,
                         )
@@ -951,7 +951,7 @@ private fun PairingCard(
                             }
                         }
 
-                        SetupCardBody.METHOD_STEPS -> IphoneSetupSteps(appSetup = appSetup)
+                        SetupCardBody.METHOD_STEPS -> IosBridgeSetupSteps(appSetup = appSetup)
                     }
                 }
             }
@@ -960,11 +960,11 @@ private fun PairingCard(
 }
 
 @Composable
-internal fun IphoneSetupModeSelector(
+internal fun IosBridgeSetupModeSelector(
     appSetup: Boolean,
     onModeChanged: () -> Unit,
     modifier: Modifier = Modifier,
-    preferences: IphoneSetupPreferences = IosCompanion.setupPreferences(LocalContext.current),
+    preferences: IosBridgeSetupPreferences = IosCompanion.setupPreferences(LocalContext.current),
 ) {
     fun select(useApp: Boolean) {
         preferences.selectMode(useApp)
@@ -1008,7 +1008,7 @@ internal fun IphoneSetupModeSelector(
 }
 
 @Composable
-internal fun IphoneSetupSteps(
+internal fun IosBridgeSetupSteps(
     appSetup: Boolean,
     modifier: Modifier = Modifier,
 ) {
@@ -1058,7 +1058,7 @@ internal fun IphoneSetupSteps(
 }
 
 @Composable
-internal fun IncomingIphonePicker(peers: List<IosCompanion.Peer>, onDismiss: () -> Unit, onSelect: (IosCompanion.Peer) -> Unit) {
+internal fun IosIncomingPeerPicker(peers: List<IosCompanion.Peer>, onDismiss: () -> Unit, onSelect: (IosCompanion.Peer) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(PhoneIphoneIcon, contentDescription = null) },

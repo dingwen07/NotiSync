@@ -6,10 +6,10 @@ import android.bluetooth.le.AdvertiseData
 import android.os.ParcelUuid
 import java.util.UUID
 
-internal enum class IphoneAdvertisement { NATIVE, SETUP, RECONNECT }
+internal enum class IosBridgeAdvertisingMode { NATIVE, SETUP, RECONNECT }
 
-/** Discovery service for an iPhone that explicitly connects using Core Bluetooth's requiresANCS option. */
-internal object IphoneAppSetup {
+/** BLE advertising modes, Android 17 OEM workaround policy, and app-assisted GATT setup service for the iOS bridge. */
+internal object IosBridgeSetup {
     // Shared with AndroidBridgeSetup.swift. The read requires link encryption and contains no user data.
     val serviceId: UUID = UUID.fromString("d87b3910-72fa-48df-8ab7-6ae96fc3fb51")
     val versionId: UUID = UUID.fromString("d87b3911-72fa-48df-8ab7-6ae96fc3fb51")
@@ -25,18 +25,18 @@ internal object IphoneAppSetup {
         return vendor == "qti" || vendor == "qcom" || vendor.startsWith("qualcomm")
     }
 
-    fun advertisingMode(appSetup: Boolean, selected: IosPeerSelection?, connectedLeAddresses: Set<String>): IphoneAdvertisement? = when {
-        !appSetup -> IphoneAdvertisement.NATIVE
-        selected == null -> IphoneAdvertisement.SETUP
+    fun advertisingMode(appSetup: Boolean, selected: IosPeerSelection?, connectedLeAddresses: Set<String>): IosBridgeAdvertisingMode? = when {
+        !appSetup -> IosBridgeAdvertisingMode.NATIVE
+        selected == null -> IosBridgeAdvertisingMode.SETUP
         connectedLeAddresses.any { selected.address.equals(it, ignoreCase = true) } -> null
-        else -> IphoneAdvertisement.RECONNECT
+        else -> IosBridgeAdvertisingMode.RECONNECT
     }
 
-    fun advertisement(mode: IphoneAdvertisement): AdvertiseData = AdvertiseData.Builder().apply {
+    fun advertisement(mode: IosBridgeAdvertisingMode): AdvertiseData = AdvertiseData.Builder().apply {
         when (mode) {
-            IphoneAdvertisement.SETUP -> addServiceUuid(ParcelUuid(serviceId))
-            IphoneAdvertisement.RECONNECT -> addServiceUuid(ParcelUuid(reconnectId))
-            IphoneAdvertisement.NATIVE -> addServiceSolicitationUuid(ParcelUuid(Ancs.SERVICE_UUID))
+            IosBridgeAdvertisingMode.SETUP -> addServiceUuid(ParcelUuid(serviceId))
+            IosBridgeAdvertisingMode.RECONNECT -> addServiceUuid(ParcelUuid(reconnectId))
+            IosBridgeAdvertisingMode.NATIVE -> addServiceSolicitationUuid(ParcelUuid(Ancs.SERVICE_UUID))
         }
     }.build()
 

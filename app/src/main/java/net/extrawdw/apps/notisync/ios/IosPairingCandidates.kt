@@ -1,7 +1,7 @@
 package net.extrawdw.apps.notisync.ios
 
 /** A fresh LE link belongs to the setup screen that saw it arrive, even while a system dialog covers it. */
-internal class IphonePairingCandidates {
+internal class IosPairingCandidates {
     data class Offer(val session: Long, val eligibleAt: Long)
 
     private data class Link(val session: Long, val bondedAtArrival: Boolean, var eligibleAt: Long?, var repairing: Boolean = false)

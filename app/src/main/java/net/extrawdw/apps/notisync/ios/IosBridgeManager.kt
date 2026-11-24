@@ -104,7 +104,7 @@ class IosBridgeManager(
 
     private var appAdvertising = false
     private var advertisingReady = false
-    private var advertisingMode: IphoneAdvertisement? = null
+    private var advertisingMode: IosBridgeAdvertisingMode? = null
     private val setupPreferences = IosCompanion.setupPreferences(context)
     private var selectedPeer: IosPeerSelection? = null
 
@@ -265,7 +265,7 @@ class IosBridgeManager(
 
     // ---- Advertising + GATT server (peripheral role) ----
 
-    private fun desiredAdvertisingMode() = IphoneAppSetup.advertisingMode(appAdvertising, selectedPeer, lePeers.keys)
+    private fun desiredAdvertisingMode() = IosBridgeSetup.advertisingMode(appAdvertising, selectedPeer, lePeers.keys)
 
     private fun syncAdvertising() {
         if (!running || !advertisingReady || resettingPeripheral) return
@@ -287,7 +287,7 @@ class IosBridgeManager(
         // A pending start or stop callback rechecks the latest selection and link state.
     }
 
-    private fun startAdvertising(adv: BluetoothLeAdvertiser, mode: IphoneAdvertisement) {
+    private fun startAdvertising(adv: BluetoothLeAdvertiser, mode: IosBridgeAdvertisingMode) {
         // The legacy startAdvertising() path silently drops service-solicitation UUIDs on many OEM stacks
         // (confirmed here: nRF Connect saw no solicitation). startAdvertisingSet() is the modern path and
         // reports a distinct status if the controller rejects the data. Keep setLegacyMode(true): iOS only
@@ -296,13 +296,13 @@ class IosBridgeManager(
             .setLegacyMode(true)
             .setConnectable(true)
             .setScannable(true)
-            .setDiscoverable(mode != IphoneAdvertisement.RECONNECT)
+            .setDiscoverable(mode != IosBridgeAdvertisingMode.RECONNECT)
             .setInterval(AdvertisingSetParameters.INTERVAL_MEDIUM)
             .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
             .build()
         // The public setup scan response may include the name; reconnect packets carry only the marker.
-        val data = IphoneAppSetup.advertisement(mode)
-        val scanResponse = if (mode == IphoneAdvertisement.RECONNECT) null else AdvertiseData.Builder()
+        val data = IosBridgeSetup.advertisement(mode)
+        val scanResponse = if (mode == IosBridgeAdvertisingMode.RECONNECT) null else AdvertiseData.Builder()
             .setIncludeDeviceName((adapter?.name?.toByteArray()?.size ?: 0) <= 29)
             .build()
         val callback = object : AdvertisingSetCallback() {
@@ -347,7 +347,7 @@ class IosBridgeManager(
             }
     }
 
-    private fun advertisingStartFailed(mode: IphoneAdvertisement) {
+    private fun advertisingStartFailed(mode: IosBridgeAdvertisingMode) {
         advertisingMode = null
         advertisingCallback = null
         if (desiredAdvertisingMode() == mode) deviceRepo.setStatus(IosBridgeStatus.ERROR) else syncAdvertising()
@@ -374,7 +374,7 @@ class IosBridgeManager(
         val callback = object : BluetoothGattServerCallback() {
             override fun onServiceAdded(status: Int, service: BluetoothGattService) {
                 handler.post {
-                    if (!running || serverCallback !== this || service.uuid != IphoneAppSetup.serviceId) return@post
+                    if (!running || serverCallback !== this || service.uuid != IosBridgeSetup.serviceId) return@post
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         advertisingReady = true
                         syncAdvertising()
@@ -389,7 +389,7 @@ class IosBridgeManager(
                     updateSelection()
                     val selected = selectedPeer
                     val status = when {
-                        characteristic.uuid != IphoneAppSetup.versionId -> BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED
+                        characteristic.uuid != IosBridgeSetup.versionId -> BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED
                         selected != null && !device.address.equals(selected.address, ignoreCase = true) ->
                             BluetoothGatt.GATT_INSUFFICIENT_AUTHORIZATION
                         offset !in 0..1 -> BluetoothGatt.GATT_INVALID_OFFSET
@@ -433,7 +433,7 @@ class IosBridgeManager(
         serverCallback = callback
         val server = mgr.openGattServer(context, callback)
         gattServer = server
-        if (server == null || (appAdvertising && !server.addService(IphoneAppSetup.service()))) {
+        if (server == null || (appAdvertising && !server.addService(IosBridgeSetup.service()))) {
             deviceRepo.setStatus(IosBridgeStatus.ERROR)
         } else if (!appAdvertising) {
             advertisingReady = true
@@ -463,7 +463,7 @@ class IosBridgeManager(
         deviceRepo.setConnectedLePeers(peers.sortedWith(compareBy({ it.name.orEmpty() }, { it.address })))
     }
 
-    internal fun currentPairingOffer(address: String): IphonePairingCandidates.Offer? {
+    internal fun currentPairingOffer(address: String): IosPairingCandidates.Offer? {
         val device = lePeers[address] ?: return null
         if (leLinkState(device) == false) return null
         return pairingCandidates.offer(address) { device.hasBridgeBond() }

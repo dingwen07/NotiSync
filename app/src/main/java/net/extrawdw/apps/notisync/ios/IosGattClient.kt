@@ -105,7 +105,6 @@ class IosGattClient(
     private val subscribe = Runnable { gatt?.let(::writeSubscription) }
     private var cccdAttempts = 0
     private var discoveryAttempts = 0
-    private var balancedPriorityRequested = false
 
     @Volatile
     private var reachedSharing = false
@@ -344,16 +343,15 @@ class IosGattClient(
      * then register the Player + Track attribute sets. Best-effort: an iPhone without AMS (or a failed
      * step) logs and leaves the notification bridge untouched.
      */
-    private fun startAmsSetup(g: BluetoothGatt) {
+    private fun startAmsSetup() {
         val eu = amsEntityUpdate
-        val host = scope
-        if (eu == null || host == null) {
-            if (eu == null) Log.i(TAG, "AMS not exposed by this iPhone — media mirroring unavailable this session")
-            requestBalancedPriority(g)
+        if (eu == null) {
+            Log.i(TAG, "AMS not exposed by this iPhone — media mirroring unavailable this session")
             return
         }
         if (amsSetupStarted) return
         amsSetupStarted = true
+        val host = scope ?: return
         CoroutineScope(host.coroutineContext + amsJob).launch {
             val euOk = amsSubscribe(eu)
             if (!euOk) {
@@ -366,18 +364,7 @@ class IosGattClient(
             val trackOk =
                 amsWrite(eu, Ams.buildEntityUpdateRegistration(Ams.ENTITY_TRACK, Ams.TRACK_ATTRS))
             Log.i(TAG, "AMS setup: remoteCommand=$rcOk player=$playerOk track=$trackOk")
-        }.invokeOnCompletion { cause ->
-            if (cause == null) handler.post { requestBalancedPriority(g) }
         }
-    }
-
-    // Service discovery can still be negotiating link timing when its callback arrives.
-    // Request balanced parameters once the bridge has finished its own setup.
-    private fun requestBalancedPriority(g: BluetoothGatt) {
-        if (g !== gatt || !reachedSharing || balancedPriorityRequested) return
-        balancedPriorityRequested = true
-        val submitted = g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
-        Log.i(TAG, "Balanced connection priority request submitted=$submitted")
     }
 
     /** Enable notifications on an AMS characteristic (CCCD write), awaiting its [onDescriptorWrite]. */
@@ -620,7 +607,7 @@ class IosGattClient(
                     handler.removeCallbacks(watchdog)
                     onStatus(IosBridgeStatus.SHARING)
                     readGapDeviceName(g)
-                    startAmsSetup(g)
+                    startAmsSetup()
                 } else {
                     writeSubscription(g)
                 }

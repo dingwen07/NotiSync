@@ -8,7 +8,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.ios.IphoneSetupPreferences
+import net.extrawdw.apps.notisync.ios.IosBridgeSetupPreferences
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
@@ -17,18 +17,18 @@ import org.junit.runner.RunWith
 import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
-class IphoneSetupModeTest {
+class IosBridgeSetupModeTest {
     @get:Rule val compose = createComposeRule()
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val name = "bridge-mode-test-${UUID.randomUUID()}"
     private val prefs = context.getSharedPreferences(name, Context.MODE_PRIVATE)
-    private fun settings(listed: Boolean) = IphoneSetupPreferences(prefs, listed)
+    private fun settings(listed: Boolean) = IosBridgeSetupPreferences(prefs, listed)
 
     @After fun cleanup() { context.deleteSharedPreferences(name) }
 
-    private fun show(preferences: IphoneSetupPreferences) {
+    private fun show(preferences: IosBridgeSetupPreferences) {
         compose.setContent {
-            IphoneSetupModeSelector(
+            IosBridgeSetupModeSelector(
                 appSetup = preferences.appModeChanges.collectAsState(preferences.usesApp).value,
                 onModeChanged = {},
                 preferences = preferences,
